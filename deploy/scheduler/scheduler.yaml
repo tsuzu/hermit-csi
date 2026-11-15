@@ -1,0 +1,89 @@
+# A second scheduler (kube-scheduler + HermitLocality). The default scheduler
+# keeps running; pods that use hermit volumes set schedulerName: hermit-scheduler.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hermit-scheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hermit-scheduler-kube-scheduler
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:kube-scheduler}
+subjects: [{kind: ServiceAccount, name: hermit-scheduler, namespace: kube-system}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hermit-scheduler-volume-scheduler
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:volume-scheduler}
+subjects: [{kind: ServiceAccount, name: hermit-scheduler, namespace: kube-system}]
+---
+# Read the authentication config for delegated authn of /metrics and /healthz.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermit-scheduler-authentication-reader
+  namespace: kube-system
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: extension-apiserver-authentication-reader}
+subjects: [{kind: ServiceAccount, name: hermit-scheduler, namespace: kube-system}]
+---
+# system:kube-scheduler only covers the lease named kube-scheduler.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hermit-scheduler-leader-election
+  namespace: kube-system
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [create]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [hermit-scheduler]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermit-scheduler-leader-election
+  namespace: kube-system
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: hermit-scheduler-leader-election}
+subjects: [{kind: ServiceAccount, name: hermit-scheduler, namespace: kube-system}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermit-scheduler
+  namespace: kube-system
+spec:
+  replicas: 2   # leader-elected
+  selector:
+    matchLabels: {app: hermit-scheduler}
+  template:
+    metadata:
+      labels: {app: hermit-scheduler}
+    spec:
+      serviceAccountName: hermit-scheduler
+      priorityClassName: system-cluster-critical
+      containers:
+        - name: scheduler
+          image: ghcr.io/tsuzu/hermit-scheduler:latest
+          args: [--config=/etc/hermit-scheduler/config.yaml]
+          envFrom:
+            # Same S3 bucket and credentials as the driver (read-only use: owner.json).
+            - configMapRef: {name: hermit-csi}
+            - secretRef: {name: hermit-csi}
+          livenessProbe:
+            httpGet: {path: /livez, port: 10259, scheme: HTTPS}
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet: {path: /readyz, port: 10259, scheme: HTTPS}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/hermit-scheduler, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: hermit-scheduler-config}

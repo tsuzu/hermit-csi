@@ -218,7 +218,7 @@ func (c *Controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 	default:
 		return nil, status.Errorf(codes.FailedPrecondition, "volume %s is attached to node %s", vol, o.NodeID)
 	}
-	next := &manifest.Owner{NodeID: node, Epoch: o.Epoch + 1}
+	next := &manifest.Owner{NodeID: node, Epoch: o.Epoch + 1, LastNode: o.LastNode}
 	if _, err := manifest.SaveOwner(ctx, c.s, vol, next, store.PutOpts{IfMatch: etag}); err != nil {
 		return nil, toStatus(err)
 	}
@@ -254,7 +254,7 @@ func (c *Controller) ControllerUnpublishVolume(ctx context.Context, req *csi.Con
 	if o.NodeID == "" || (node != "" && o.NodeID != node) {
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
-	next := &manifest.Owner{Epoch: o.Epoch + 1}
+	next := &manifest.Owner{Epoch: o.Epoch + 1, LastNode: o.NodeID}
 	if _, err := manifest.SaveOwner(ctx, c.s, vol, next, store.PutOpts{IfMatch: etag}); err != nil {
 		return nil, toStatus(err)
 	}

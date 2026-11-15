@@ -41,6 +41,20 @@ type Owner struct {
 	Epoch  int64  `json:"epoch"`
 	// Address of the node agent (host:port) used for in-use snapshots.
 	Address string `json:"address,omitempty"`
+	// LastNode is the node the volume was last detached from. That node kept
+	// its local LV, so staging there again skips the restore from S3 (used by
+	// the scheduler plugin to prefer it).
+	LastNode string `json:"lastNode,omitempty"`
+}
+
+// LocalCopyNode returns the node most likely to hold a local copy that can be
+// staged without a restore: the current owner, else the last one. Empty if
+// no node has staged the volume yet.
+func (o *Owner) LocalCopyNode() string {
+	if o.NodeID != "" {
+		return o.NodeID
+	}
+	return o.LastNode
 }
 
 func LatestKey(vol string) string    { return "volumes/" + vol + "/latest.json.gz" }

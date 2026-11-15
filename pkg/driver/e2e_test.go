@@ -173,6 +173,26 @@ func (c *cluster) chunkCount() int {
 	return n
 }
 
+// expectLocalCopy checks owner.json: the attached node and the node the
+// volume was last detached from (what the scheduler plugin reads).
+func (c *cluster) expectLocalCopy(vol, nodeID, lastNode string) {
+	c.t.Helper()
+	o, _, err := manifest.LoadOwner(context.Background(), c.s, vol)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	if o.NodeID != nodeID || o.LastNode != lastNode {
+		c.t.Fatalf("owner of %s = {node %q, last %q}, want {%q, %q}", vol, o.NodeID, o.LastNode, nodeID, lastNode)
+	}
+	want := nodeID
+	if want == "" {
+		want = lastNode
+	}
+	if got := o.LocalCopyNode(); got != want {
+		c.t.Fatalf("LocalCopyNode = %q, want %q", got, want)
+	}
+}
+
 func (c *cluster) latest(vol string) *manifest.Manifest {
 	c.t.Helper()
 	m, _, err := manifest.Load(context.Background(), c.s, manifest.LatestKey(vol))
@@ -231,9 +251,11 @@ func runMoveScenario(t *testing.T, c *cluster) {
 	c.write("node-a", vol, 12*testChunk, 512, 4)
 	want := c.read("node-a", vol)
 	c.detach(vol, "node-a")
+	c.expectLocalCopy(vol, "", "node-a")
 
 	// Publishing to another node while attached elsewhere must fail.
 	c.attach(vol, "node-b")
+	c.expectLocalCopy(vol, "node-b", "node-a")
 	if _, err := c.ctl.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{VolumeId: vol, NodeId: "node-a"}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("double attach: got %v, want FailedPrecondition", err)
 	}
@@ -292,6 +314,7 @@ func runFencingScenario(t *testing.T, c *cluster) {
 	// node-a becomes unreachable; Kubernetes force-detaches and moves the pod.
 	c.write("node-a", vol, testChunk, 100, 2) // lost: never backed up
 	c.forceDetach(vol, "node-a")
+	c.expectLocalCopy(vol, "", "node-a")
 	c.attach(vol, "node-b")
 	if got := c.read("node-b", vol); !bytes.Equal(got, backedUp) {
 		t.Fatal("node-b should get the last backup")

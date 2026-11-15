@@ -1,0 +1,25 @@
+# KubeSchedulerConfiguration for hermit-scheduler: the default plugins plus
+# HermitLocality, which prefers nodes that already hold a pod's hermit volumes
+# (no restore from S3 on stage). Pods opt in with schedulerName: hermit-scheduler.
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  leaderElect: true
+  resourceNamespace: kube-system
+  resourceName: hermit-scheduler
+profiles:
+  - schedulerName: hermit-scheduler
+    plugins:
+      multiPoint:
+        enabled:
+          # A score of 100 here outweighs the default spreading / resource
+          # scores, so a node with a current local copy wins whenever it
+          # passes filtering. Lower it to make locality a tie-breaker.
+          - name: HermitLocality
+            weight: 10
+    pluginConfig:
+      - name: HermitLocality
+        args:
+          driverName: hermit.csi.tsuzu.dev
+          timeout: 2s
+          # S3 settings default to the hermit-csi ConfigMap (S3_BUCKET, ...).

@@ -28,6 +28,25 @@ jobs:
       - name: Coverage
         run: go tool cover -func=cover.out | tail -1
 
+  scheduler:
+    name: scheduler plugin (vet + test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: scheduler
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: scheduler/go.mod
+          cache-dependency-path: scheduler/go.sum
+      - name: go mod tidy is clean
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+
   integration:
     name: integration (real LVM thin pools + MinIO)
     runs-on: ubuntu-24.04
@@ -102,3 +121,9 @@ jobs:
           context: .
           push: false
           tags: hermit-csi:ci
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scheduler/Dockerfile
+          push: false
+          tags: hermit-scheduler:ci

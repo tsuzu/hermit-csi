@@ -1,0 +1,10 @@
+# Optional: kubectl apply -k deploy/scheduler/ (after deploy/, which provides
+# the hermit-csi ConfigMap and Secret this scheduler reads).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kube-system
+resources:
+  - scheduler.yaml
+configMapGenerator:
+  - name: hermit-scheduler-config
+    files: [config.yaml]

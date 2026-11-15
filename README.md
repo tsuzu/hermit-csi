@@ -52,6 +52,24 @@ parameters:
 - NodeStage の直後は S3 と一致しているので、最初の定期バックアップはそこから 1 間隔後です。ノードプラグインが再起動したときは、最初の周回ですべてのボリュームをバックアップします
 - バックアップは 1 つずつ順番に行うので、ボリュームが多く差分が大きいと、実際の間隔は指定より伸びることがあります
 
+## スケジューラプラグイン（ローカルコピーのあるノードを優先）
+
+別ノードで NodeStage されると S3 からの復元が終わるまで Pod が起動しないため、前回そのボリュームを使っていたノードに戻せると速く起動できます。
+`scheduler/` は kube-scheduler にスコアプラグイン `HermitLocality` を組み込んだ 2 つ目のスケジューラです。
+
+- コントローラは ControllerUnpublish のときに、外したノードを `owner.json` の `lastNode` に記録します（追加の S3 書き込みはありません）
+- プラグインは PreScore で Pod のバインド済み hermit PVC ごとに `owner.json` を読み、アタッチ中ならそのノード、デタッチ後なら `lastNode` を「ローカルコピーのあるノード」とみなします
+- Score は、Pod の hermit ボリュームの容量のうち、そのノードにコピーがある割合 × 100 です。フィルタはしないので、そのノードに置けなければ普通に別ノードへ行きます（その場合は復元）
+- 未バインド（WaitForFirstConsumer の新規ボリューム）、他ドライバのボリューム、所有情報が無い・読めない場合は何も優先しません。S3 の読み取りは 1 サイクルあたり既定 2 秒で打ち切ります
+
+```sh
+docker build -f scheduler/Dockerfile -t ghcr.io/tsuzu/hermit-scheduler:latest .
+kubectl apply -k deploy/scheduler/     # deploy/ の ConfigMap / Secret（S3 設定と認証情報）を共有します
+```
+
+使う Pod は `spec.schedulerName: hermit-scheduler` を指定します（StatefulSet なら Pod テンプレートに）。
+既定のスケジューラはそのまま動き続けます。プラグインの重み（既定 10）は `deploy/scheduler/config.yaml` で調整できます。
+
 ## ディレクトリ
 
 ```
@@ -63,6 +81,8 @@ pkg/lvm/           lvcreate / thin_delta / thin_dump のラッパーと XML パ�
 pkg/driver/        CSI Identity / Controller / Node、バックアップループ、スナップショットエージェント
 deploy/            CSIDriver, RBAC, Controller Deployment, Node DaemonSet, StorageClass
 hack/it-setup.sh   結合テスト用に loop デバイス上へ thin pool を作るスクリプト
+scheduler/         HermitLocality スケジューラプラグイン（別 Go モジュール。k8s.io/kubernetes に依存）
+deploy/scheduler/  hermit-scheduler の設定、RBAC、Deployment
 ```
 
 ## テスト
@@ -101,7 +121,8 @@ sudo hack/it-setup.sh down
 CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブを実行します。
 - **unit**: gofmt / vet / `-race` テスト / カバレッジ
 - **integration**: loop デバイス上の 2 つの thin pool と MinIO を使った結合テスト
-- **image**: コンテナイメージのビルド
+- **scheduler**: スケジューラプラグインの vet / テスト（実際の kube-scheduler を fake API サーバーで動かし、Pod の配置先を検証）
+- **image**: コンテナイメージ（ドライバとスケジューラ）のビルド
 
 ## デプロイ
 
