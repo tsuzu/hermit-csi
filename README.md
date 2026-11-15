@@ -150,6 +150,48 @@ CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 
 The images are `ghcr.io/tsuzu/hermit-csi` and `ghcr.io/tsuzu/hermit-scheduler` (linux/amd64, linux/arm64).
 
+### S3 credentials
+
+The controller, node plugin and scheduler read S3 with one of the following (roles need v0.2.0 or later; `<version>` below is a release tag):
+
+- **Static keys**: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the `hermit-csi` Secret.
+- **EKS IRSA** (IAM roles for service accounts): annotate the service accounts `hermit-csi-controller`,
+  `hermit-csi-node` and `hermit-scheduler` (namespace `kube-system`) with `eks.amazonaws.com/role-arn`.
+  The pod identity webhook injects `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE`, and the driver assumes that
+  role explicitly, so it is used even if static keys are still in the Secret.
+  ```yaml
+  # kustomization.yaml
+  resources:
+    - https://github.com/tsuzu/hermit-csi/releases/download/<version>/hermit-csi.yaml
+  patches:
+    - target: {kind: ServiceAccount, name: "hermit-csi-.*|hermit-scheduler"}
+      patch: |-
+        - {op: add, path: /metadata/annotations, value: {eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/hermit-csi"}}
+  ```
+- **EKS Pod Identity**: associate the role with the same service accounts. This goes through the SDK's default
+  credential chain, where static keys take precedence, so remove `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+  from the Secret.
+- **Any cluster, web identity** (self-managed Kubernetes whose service account issuer is registered as an IAM
+  OIDC provider, or an S3-compatible store with its own STS such as MinIO): add the kustomize component
+  [`deploy/components/web-identity`](deploy/components/web-identity/kustomization.yaml), which projects a service
+  account token with audience `sts.amazonaws.com`, and set `S3_ROLE_ARN` (plus `S3_STS_ENDPOINT` for a non-AWS
+  STS) in the ConfigMap.
+  ```yaml
+  resources:
+    - https://github.com/tsuzu/hermit-csi/releases/download/<version>/hermit-csi.yaml
+  components:
+    - https://github.com/tsuzu/hermit-csi/deploy/components/web-identity?ref=<version>
+  ```
+
+`S3_ROLE_ARN` without a token file assumes the role with whatever credentials the default chain finds (e.g. for a
+bucket in another account). All settings are also flags: `--s3-role-arn`, `--s3-web-identity-token-file`,
+`--s3-role-session-name`, `--sts-endpoint`. Temporary credentials are refreshed before they expire, rereading the
+token file, so rotated projected tokens are picked up. The kind e2e test runs with web identity only (MinIO's STS
+trusting the cluster's service account issuer) and no static keys at all.
+
+Permissions on the bucket (and prefix): the controller and node plugin need `s3:GetObject`, `s3:PutObject`,
+`s3:DeleteObject` and `s3:ListBucket`; the scheduler only needs `s3:GetObject` on `volumes/*/owner.json`.
+
 ### Releasing
 
 Pushing a `vX.Y.Z` tag on a commit whose CI on `main` is green makes `.github/workflows/release.yaml` push both images to ghcr

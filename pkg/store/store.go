@@ -15,7 +15,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
 
@@ -34,6 +36,19 @@ type Config struct {
 	Endpoint  string // optional, for MinIO / Ceph RGW etc.
 	Region    string
 	PathStyle bool
+
+	// RoleARN, if set, is assumed for S3 access instead of using the default
+	// credential chain directly. With WebIdentityTokenFile (e.g. a projected
+	// Kubernetes service account token) this is AssumeRoleWithWebIdentity,
+	// the mechanism behind EKS IRSA; the file is reread on every refresh, so
+	// rotated tokens are picked up. Without it, the default chain's
+	// credentials call sts:AssumeRole (e.g. for a bucket in another account).
+	RoleARN              string
+	WebIdentityTokenFile string
+	RoleSessionName      string // default "hermit-csi"
+	// STSEndpoint overrides the STS endpoint (S3-compatible stores with their
+	// own STS, such as MinIO, or a VPC endpoint). Default: the regional AWS one.
+	STSEndpoint string
 }
 
 // Store is an S3 bucket (plus optional prefix).
@@ -57,6 +72,12 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	if cfg.WebIdentityTokenFile != "" && cfg.RoleARN == "" {
+		return nil, errors.New("a web identity token file needs a role ARN to assume")
+	}
+	if cfg.RoleARN != "" {
+		awsCfg.Credentials = aws.NewCredentialsCache(roleProvider(awsCfg, cfg))
+	}
 	c := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
@@ -64,6 +85,24 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		o.UsePathStyle = cfg.PathStyle
 	})
 	return &Store{c: c, bucket: cfg.Bucket, prefix: cfg.Prefix}, nil
+}
+
+// roleProvider returns the credentials provider that assumes cfg.RoleARN.
+func roleProvider(awsCfg aws.Config, cfg Config) aws.CredentialsProvider {
+	stsClient := sts.NewFromConfig(awsCfg, func(o *sts.Options) {
+		if cfg.STSEndpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.STSEndpoint)
+		}
+	})
+	session := cfg.RoleSessionName
+	if session == "" {
+		session = "hermit-csi"
+	}
+	if cfg.WebIdentityTokenFile != "" {
+		return stscreds.NewWebIdentityRoleProvider(stsClient, cfg.RoleARN, stscreds.IdentityTokenFile(cfg.WebIdentityTokenFile),
+			func(o *stscreds.WebIdentityRoleOptions) { o.RoleSessionName = session })
+	}
+	return stscreds.NewAssumeRoleProvider(stsClient, cfg.RoleARN, func(o *stscreds.AssumeRoleOptions) { o.RoleSessionName = session })
 }
 
 func (s *Store) key(k string) string {
@@ -194,4 +233,28 @@ func (s *Store) List(ctx context.Context, prefix string, fn func(ObjectInfo) err
 		}
 	}
 	return nil
+}
+
+// ApplyRoleEnv fills empty role settings from the environment: first the
+// S3_ROLE_ARN, S3_WEB_IDENTITY_TOKEN_FILE, S3_ROLE_SESSION_NAME and
+// S3_STS_ENDPOINT variables (the hermit-csi ConfigMap), then the
+// AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE pair that the EKS pod identity
+// webhook injects for IRSA. Assuming the role explicitly, rather than leaving
+// it to the default credential chain, makes it win over static keys that may
+// still be in the environment (the chain would prefer those).
+func (c *Config) ApplyRoleEnv(getenv func(string) string) {
+	or := func(v *string, key string) {
+		if *v == "" {
+			*v = getenv(key)
+		}
+	}
+	or(&c.RoleARN, "S3_ROLE_ARN")
+	or(&c.WebIdentityTokenFile, "S3_WEB_IDENTITY_TOKEN_FILE")
+	or(&c.RoleSessionName, "S3_ROLE_SESSION_NAME")
+	or(&c.STSEndpoint, "S3_STS_ENDPOINT")
+	if c.RoleARN == "" && c.WebIdentityTokenFile == "" {
+		if arn, file := getenv("AWS_ROLE_ARN"), getenv("AWS_WEB_IDENTITY_TOKEN_FILE"); arn != "" && file != "" {
+			c.RoleARN, c.WebIdentityTokenFile = arn, file
+		}
+	}
 }

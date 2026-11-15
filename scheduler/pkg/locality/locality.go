@@ -132,6 +132,7 @@ func storeConfig(a Args, getenv func(string) string) store.Config {
 	if c.Region == "" {
 		c.Region = "us-east-1" // same default as the driver
 	}
+	c.ApplyRoleEnv(getenv) // same role settings as the driver
 	return c
 }
 

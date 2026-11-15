@@ -32,6 +32,10 @@ func main() {
 		s3Endpoint = flag.String("s3-endpoint", "", "S3 endpoint URL (MinIO, Ceph RGW, ...)")
 		region     = flag.String("s3-region", "us-east-1", "S3 region")
 		pathStyle  = flag.Bool("s3-path-style", false, "use path-style S3 URLs")
+		roleARN    = flag.String("s3-role-arn", "", "IAM role to assume for S3 (env S3_ROLE_ARN; default: AWS_ROLE_ARN when AWS_WEB_IDENTITY_TOKEN_FILE is also set, as with EKS IRSA)")
+		tokenFile  = flag.String("s3-web-identity-token-file", "", "service account token for AssumeRoleWithWebIdentity (env S3_WEB_IDENTITY_TOKEN_FILE); without it the role is assumed with the default credentials")
+		session    = flag.String("s3-role-session-name", "", "STS role session name (env S3_ROLE_SESSION_NAME; default hermit-csi)")
+		stsURL     = flag.String("sts-endpoint", "", "STS endpoint URL, e.g. for MinIO (env S3_STS_ENDPOINT; default: AWS regional)")
 		chunkMiB   = flag.Int64("chunk-size-mib", 4, "chunk size for new volumes (MiB)")
 		parallel   = flag.Int("parallel", 8, "concurrent chunk transfers")
 		gcInterval = flag.Duration("gc-interval", time.Hour, "chunk GC interval (controller)")
@@ -56,9 +60,15 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	s, err := store.New(ctx, store.Config{
+	scfg := store.Config{
 		Bucket: *bucket, Prefix: *prefix, Endpoint: *s3Endpoint, Region: *region, PathStyle: *pathStyle,
-	})
+		RoleARN: *roleARN, WebIdentityTokenFile: *tokenFile, RoleSessionName: *session, STSEndpoint: *stsURL,
+	}
+	scfg.ApplyRoleEnv(os.Getenv)
+	if scfg.RoleARN != "" {
+		klog.InfoS("assuming IAM role for S3", "role", scfg.RoleARN, "webIdentityTokenFile", scfg.WebIdentityTokenFile, "stsEndpoint", scfg.STSEndpoint)
+	}
+	s, err := store.New(ctx, scfg)
 	if err != nil {
 		klog.Fatal(err)
 	}

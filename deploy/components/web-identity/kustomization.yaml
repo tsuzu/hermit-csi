@@ -1,0 +1,75 @@
+# S3 access through an IAM role assumed with the pod's service account token
+# (AssumeRoleWithWebIdentity), for clusters without the EKS pod identity
+# webhook: self-managed Kubernetes whose service account issuer is registered
+# as an IAM OIDC provider, or S3-compatible stores with an STS (e.g. MinIO).
+#
+# Projects a token with audience sts.amazonaws.com into the driver and
+# scheduler containers and points S3_WEB_IDENTITY_TOKEN_FILE at it. Set
+# S3_ROLE_ARN (and, for non-AWS STS, S3_STS_ENDPOINT) in the hermit-csi
+# ConfigMap; the Secret then only needs HERMIT_AGENT_TOKEN.
+#
+#   components:
+#     - https://github.com/tsuzu/hermit-csi/deploy/components/web-identity?ref=<version>
+#
+# On EKS with IRSA you do not need this: annotate the service accounts with
+# eks.amazonaws.com/role-arn instead (see the README).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: {kind: Deployment, name: hermit-csi-controller}
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: hermit-csi-controller}
+      spec:
+        template:
+          spec:
+            containers:
+              - name: driver
+                env:
+                  - {name: S3_WEB_IDENTITY_TOKEN_FILE, value: /var/run/secrets/hermit/aws/token}
+                volumeMounts:
+                  - {name: aws-token, mountPath: /var/run/secrets/hermit/aws, readOnly: true}
+            volumes:
+              - name: aws-token
+                projected:
+                  sources:
+                    - serviceAccountToken: {audience: sts.amazonaws.com, expirationSeconds: 86400, path: token}
+  - target: {kind: DaemonSet, name: hermit-csi-node}
+    patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata: {name: hermit-csi-node}
+      spec:
+        template:
+          spec:
+            containers:
+              - name: driver
+                env:
+                  - {name: S3_WEB_IDENTITY_TOKEN_FILE, value: /var/run/secrets/hermit/aws/token}
+                volumeMounts:
+                  - {name: aws-token, mountPath: /var/run/secrets/hermit/aws, readOnly: true}
+            volumes:
+              - name: aws-token
+                projected:
+                  sources:
+                    - serviceAccountToken: {audience: sts.amazonaws.com, expirationSeconds: 86400, path: token}
+  - target: {kind: Deployment, name: hermit-scheduler}
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: hermit-scheduler}
+      spec:
+        template:
+          spec:
+            containers:
+              - name: scheduler
+                env:
+                  - {name: S3_WEB_IDENTITY_TOKEN_FILE, value: /var/run/secrets/hermit/aws/token}
+                volumeMounts:
+                  - {name: aws-token, mountPath: /var/run/secrets/hermit/aws, readOnly: true}
+            volumes:
+              - name: aws-token
+                projected:
+                  sources:
+                    - serviceAccountToken: {audience: sts.amazonaws.com, expirationSeconds: 86400, path: token}

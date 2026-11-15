@@ -5,10 +5,15 @@
 #
 # Usage: test/e2e/run.sh up | test | dump | down
 #
-# Prerequisites: root via sudo, docker, kind, kubectl, lvm2 and
-# thin-provisioning-tools on the host, the images ghcr.io/tsuzu/hermit-csi:e2e
-# and ghcr.io/tsuzu/hermit-scheduler:e2e built locally, and an S3 endpoint
-# (MinIO) on the host at port $S3_PORT with bucket $S3_BUCKET.
+# Prerequisites: root via sudo, docker, kind, kubectl, aws CLI, python3, lvm2
+# and thin-provisioning-tools on the host, the images
+# ghcr.io/tsuzu/hermit-csi:e2e and ghcr.io/tsuzu/hermit-scheduler:e2e built
+# locally, and a MinIO server binary at $MINIO_BIN.
+#
+# S3 access uses no static keys: the pods' projected service account tokens
+# are exchanged for temporary credentials with AssumeRoleWithWebIdentity
+# (deploy/components/web-identity). MinIO plays STS, trusting the kind API
+# server as its OpenID provider, so this exercises the IRSA code path.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,6 +22,9 @@ NODE_IMAGE=${NODE_IMAGE:-kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd
 SNAPSHOTTER_VERSION=${SNAPSHOTTER_VERSION:-v8.2.0} # matches the csi-snapshotter sidecar
 BUSYBOX=${BUSYBOX:-busybox:1.37}
 S3_PORT=${S3_PORT:-9000}
+MINIO_BIN=${MINIO_BIN:-$HOME/minio-bin/minio}
+MINIO_DIR=${MINIO_DIR:-/tmp/hermit-e2e-minio}
+MINIO_ROOT=minioadmin # only used here, to create the bucket
 S3_BUCKET=${S3_BUCKET:-hermit-e2e}
 IMG_DIR=${IMG_DIR:-/var/tmp/hermit-e2e}
 WORKERS=("$CLUSTER-worker" "$CLUSTER-worker2")
@@ -61,8 +69,9 @@ up() {
   "${K[@]}" apply -k "https://github.com/kubernetes-csi/external-snapshotter/client/config/crd?ref=$SNAPSHOTTER_VERSION"
   "${K[@]}" apply -k "https://github.com/kubernetes-csi/external-snapshotter/deploy/kubernetes/snapshot-controller?ref=$SNAPSHOTTER_VERSION"
 
+  start_minio
+
   log "hermit-csi + hermit-scheduler"
-  curl -sf "http://127.0.0.1:$S3_PORT/minio/health/ready" || fail "no S3 endpoint on the host at port $S3_PORT"
   gw=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1)
   cat > overlay/s3.yaml <<EOF
 apiVersion: v1
@@ -74,13 +83,14 @@ data:
   S3_ENDPOINT: http://$gw:$S3_PORT
   S3_REGION: us-east-1
   S3_PATH_STYLE: "true"
+  S3_ROLE_ARN: $ROLE_ARN
+  S3_STS_ENDPOINT: http://$gw:$S3_PORT
 ---
+# No S3 keys: credentials come only from AssumeRoleWithWebIdentity.
 apiVersion: v1
 kind: Secret
 metadata: {name: hermit-csi, namespace: kube-system}
 stringData:
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
   HERMIT_AGENT_TOKEN: e2e-token
 EOF
   "${K[@]}" apply -k overlay
@@ -132,7 +142,49 @@ lvremove -y "$vg/e2e-preflight-snap" "$vg/e2e-preflight"
   done
 }
 
+# start_minio: MinIO on the host, with the kind API server as OpenID provider
+# for its STS. Sets ROLE_ARN to the role that maps those tokens to readwrite.
+start_minio() {
+  log "MinIO with STS trusting the cluster's service account issuer"
+  local cp_ip
+  cp_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$CLUSTER-control-plane" | awk '{print $1}')
+  # MinIO fetches the discovery document and JWKS anonymously.
+  "${K[@]}" create clusterrolebinding hermit-e2e-oidc-discovery \
+    --clusterrole=system:service-account-issuer-discovery --group=system:unauthenticated \
+    --dry-run=client -o yaml | "${K[@]}" apply -f -
+  rm -rf "$MINIO_DIR" && mkdir -p "$MINIO_DIR/data" "$MINIO_DIR/certs/CAs"
+  docker cp "$CLUSTER-control-plane:/etc/kubernetes/pki/ca.crt" "$MINIO_DIR/certs/CAs/kind-ca.crt"
+  curl -sf --cacert "$MINIO_DIR/certs/CAs/kind-ca.crt" "https://$cp_ip:6443/.well-known/openid-configuration" \
+    || fail "OpenID discovery of the kind API server is not reachable"
+  echo
+  MINIO_ROOT_USER=$MINIO_ROOT MINIO_ROOT_PASSWORD=$MINIO_ROOT \
+  MINIO_IDENTITY_OPENID_CONFIG_URL="https://$cp_ip:6443/.well-known/openid-configuration" \
+  MINIO_IDENTITY_OPENID_CLIENT_ID=sts.amazonaws.com \
+  MINIO_IDENTITY_OPENID_ROLE_POLICY=readwrite \
+    nohup "$MINIO_BIN" server "$MINIO_DIR/data" --address "0.0.0.0:$S3_PORT" --certs-dir "$MINIO_DIR/certs" \
+    > "$MINIO_DIR/minio.log" 2>&1 &
+  echo $! > "$MINIO_DIR/pid"
+  for _ in $(seq 1 30); do
+    curl -sf "http://127.0.0.1:$S3_PORT/minio/health/ready" && break
+    sleep 1
+  done
+  AWS_ACCESS_KEY_ID=$MINIO_ROOT AWS_SECRET_ACCESS_KEY=$MINIO_ROOT AWS_REGION=us-east-1 \
+    aws --endpoint-url "http://127.0.0.1:$S3_PORT" s3 mb "s3://$S3_BUCKET"
+  # MinIO names the role after the client ID, arn:minio:iam:<region>::role/<base64url(sha1(client ID))>,
+  # and lists it at startup ("IAM Roles: ...").
+  local id
+  id=$(printf %s sts.amazonaws.com | python3 -c 'import sys,hashlib,base64;print(base64.urlsafe_b64encode(hashlib.sha1(sys.stdin.buffer.read()).digest()).rstrip(b"=").decode())')
+  for _ in $(seq 1 20); do
+    ROLE_ARN=$(sed 's/\x1b\[[0-9;]*m//g' "$MINIO_DIR/minio.log" | grep -oE "arn:minio:iam:[^: ]*::role/$id" | head -1 || true)
+    [ -n "$ROLE_ARN" ] && break
+    sleep 1
+  done
+  [ -n "$ROLE_ARN" ] || { tail -40 "$MINIO_DIR/minio.log"; fail "MinIO did not register an OpenID role for client ID sts.amazonaws.com"; }
+  echo "MinIO OpenID role: $ROLE_ARN"
+}
+
 down() {
+  [ -f "$MINIO_DIR/pid" ] && kill "$(cat "$MINIO_DIR/pid")" 2>/dev/null || true
   kind delete cluster --name "$CLUSTER" || true
   for vg in "${WORKERS[@]}"; do
     sudo vgremove -ff -y "$vg" 2>/dev/null || true
@@ -159,6 +211,8 @@ dump() {
   done
   sudo lvs -a -o+thin_id,lv_tags
   sudo dmsetup ls
+  echo "----- MinIO"
+  tail -60 "$MINIO_DIR/minio.log"
 }
 
 # ------------------------------------------------------------------ helpers

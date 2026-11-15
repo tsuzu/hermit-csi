@@ -6,6 +6,9 @@ resources:
   - ../../../deploy/scheduler
   # ConfigMap + Secret for the MinIO on the host (written by run.sh).
   - s3.yaml
+components:
+  # S3 credentials only via AssumeRoleWithWebIdentity (MinIO STS).
+  - ../../../deploy/components/web-identity
 images:
   - {name: ghcr.io/tsuzu/hermit-csi, newTag: e2e}
   - {name: ghcr.io/tsuzu/hermit-scheduler, newTag: e2e}
