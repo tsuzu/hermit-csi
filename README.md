@@ -1,40 +1,40 @@
 # hermit-csi
 
-ローカルの LVM thin ボリュームを高速なローカルディスクとして使いつつ、S3 に**差分だけ**を継続バックアップし、
-別ノードでマウントされたときは S3 から自動で復元する CSI ドライバです。Block / Filesystem の両モードに対応しています。
+A CSI driver that uses local LVM thin volumes as fast local disks, continuously backs up **only the changes** to S3,
+and automatically restores a volume from S3 when it is mounted on a different node. Both Block and Filesystem modes are supported.
 
-## 仕組み
+## How it works
 
 ```
-chunks/<sha256>              全ボリューム共有のチャンク（中身のハッシュで重複排除）
-volumes/<id>/latest.json.gz  最新マニフェスト（チャンク番号 → ハッシュ）。バックアップごとに上書き
-volumes/<id>/owner.json      アタッチ先ノードと所有エポック
-snapshots/<id>.json.gz       VolumeSnapshot 時点のマニフェスト（不変）
+chunks/<sha256>              chunks shared by all volumes (deduplicated by content hash)
+volumes/<id>/latest.json.gz  latest manifest (chunk index -> hash), overwritten on every backup
+volumes/<id>/owner.json      attached node and ownership epoch
+snapshots/<id>.json.gz       manifest as of a VolumeSnapshot (immutable)
 ```
 
-| 操作 | 動き |
+| Operation | What happens |
 |---|---|
-| CreateVolume | 全ゼロのマニフェストを作るだけ（データ転送なし）。スナップショット／クローン元からの作成もマニフェストのコピーのみ |
-| ControllerPublish | `owner.json` を新ノードに書き換えてエポックを +1。`latest.json` にもエポックを書き込み ETag を変えることで、旧ノードの条件付き書き込み（If-Match）を失敗させる（フェンシング） |
-| NodeStage | ローカル LV の世代が `latest.json` と一致すればそのまま使う。違えば thin LV を作り直して S3 から並列復元し、直後に基準スナップショットを取る |
-| 定期バックアップ | ボリュームごとの間隔（後述）で、thin スナップショット → `thin_delta` で前回基準との差分ブロックを取得 → 該当チャンクだけ読み、S3 に無いハッシュだけ PUT → `latest.json` を If-Match で差し替え |
-| NodeUnstage | アンマウント後に最終バックアップ。LV は残す（同じノードに戻れば復元不要） |
-| ControllerUnpublish | 所有を解除してエポック +1（ノード障害時の強制デタッチでも旧ノードを締め出す） |
-| CreateSnapshot | デタッチ中なら `latest.json` のコピー。使用中なら所有ノードのエージェントに依頼し、その時点の差分を上げてからマニフェストを固定 |
-| GC（controller） | どのマニフェストからも参照されず、猶予期間（既定 24h）を過ぎたチャンクを削除 |
+| CreateVolume | Writes an all-zero manifest (no data transfer). Creating from a snapshot or cloning a volume only copies the manifest |
+| ControllerPublish | Points `owner.json` at the new node and bumps the epoch. Also writes the epoch into `latest.json`, which changes its ETag, so the old node's conditional writes (If-Match) fail (fencing) |
+| NodeStage | If the local LV's generation matches `latest.json`, uses it as is. Otherwise recreates the thin LV, restores it from S3 in parallel, and takes a base snapshot right after |
+| Periodic backup | At each volume's interval (see below): thin snapshot -> `thin_delta` against the previous base for the changed blocks -> read only those chunks, PUT only hashes S3 does not have yet -> replace `latest.json` with If-Match |
+| NodeUnstage | Final backup after unmounting. The LV is kept (no restore needed if the volume comes back to the same node) |
+| ControllerUnpublish | Releases ownership and bumps the epoch (a force detach after a node failure also locks out the old node) |
+| CreateSnapshot | Detached: a copy of `latest.json`. In use: asks the owning node's agent to upload the changes up to that point, then freezes the manifest |
+| GC (controller) | Deletes chunks that no manifest references and that are older than the grace period (default 24h) |
 
-全量アップロードは起きません。初回は割り当て済みブロック（`thin_dump`）だけを読み、ゼロのチャンクは送りません。
-基準スナップショットを失った場合も、ローカルを読み直してハッシュが変わった分だけを上げます。
+There are no full uploads. The first backup reads only the allocated blocks (`thin_dump`) and skips zero chunks.
+If the base snapshot is lost, the node rereads the local volume and uploads only the chunks whose hash changed.
 
-整合性について:
-- Filesystem モードはスナップショット前に `fsfreeze` するので、ファイルシステムとして整合した状態になります
-- Block モードはクラッシュ整合（電源断と同等）です
-- **ノードが突然死んだ場合**は、最後のバックアップ以降の書き込みが失われます（RPO = そのボリュームのバックアップ間隔）
+Consistency:
+- Filesystem mode runs `fsfreeze` before each snapshot, so backups are filesystem-consistent
+- Block mode is crash-consistent (equivalent to a power loss)
+- **If a node dies suddenly**, writes since the last backup are lost (RPO = the volume's backup interval)
 
-### バックアップ間隔
+### Backup interval
 
-定期バックアップの間隔は StorageClass の `parameters.backupInterval` でボリュームごとに指定できます（Go の duration 形式、10 秒以上）。
-指定が無いボリュームはノードの `--backup-interval`（既定 5m、`0` で定期バックアップなし）に従います。
+The periodic backup interval can be set per volume with the StorageClass parameter `parameters.backupInterval` (Go duration, at least 10s).
+Volumes without it use the node's `--backup-interval` (default 5m; `0` disables periodic backups for them).
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -47,63 +47,65 @@ parameters:
   backupInterval: 1m
 ```
 
-- 値は CreateVolume 時に PV の volume context に記録され、NodeStage のたびにノードへ渡されます。PV は不変なので、StorageClass を後から変えても既存のボリュームには反映されません
-- ノードは 10 秒ごとに起き、前回の定期バックアップ開始から間隔が経ったボリュームだけを順番にバックアップします。失敗したら次の間隔で再試行します
-- NodeStage の直後は S3 と一致しているので、最初の定期バックアップはそこから 1 間隔後です。ノードプラグインが再起動したときは、最初の周回ですべてのボリュームをバックアップします
-- バックアップは 1 つずつ順番に行うので、ボリュームが多く差分が大きいと、実際の間隔は指定より伸びることがあります
+- The value is recorded in the PV's volume context at CreateVolume and passed to the node on every NodeStage. PVs are immutable, so changing the StorageClass later does not affect existing volumes
+- The node wakes up every 10s and backs up, one at a time, the volumes whose interval has elapsed since their last periodic backup started. A failed backup is retried one interval later
+- Right after NodeStage the volume matches S3, so the first periodic backup happens one interval later. After a node plugin restart, every volume is backed up on the first round
+- Backups run one at a time, so with many volumes or large changes the actual interval can be longer than configured
 
-## スケジューラプラグイン（ローカルコピーのあるノードを優先）
+## Scheduler plugin (prefer nodes that already hold a local copy)
 
-別ノードで NodeStage されると S3 からの復元が終わるまで Pod が起動しないため、前回そのボリュームを使っていたノードに戻せると速く起動できます。
-`scheduler/` は kube-scheduler にスコアプラグイン `HermitLocality` を組み込んだ 2 つ目のスケジューラです。
+When a volume is staged on a different node, the pod does not start until the restore from S3 finishes, so moving the pod back to the node that last used the volume makes it start much faster.
+`scheduler/` is a second scheduler: kube-scheduler with the score plugin `HermitLocality` compiled in.
 
-- コントローラは ControllerUnpublish のときに、外したノードを `owner.json` の `lastNode` に記録します（追加の S3 書き込みはありません）
-- プラグインは PreScore で Pod のバインド済み hermit PVC ごとに `owner.json` を読み、アタッチ中ならそのノード、デタッチ後なら `lastNode` を「ローカルコピーのあるノード」とみなします
-- Score は、Pod の hermit ボリュームの容量のうち、そのノードにコピーがある割合 × 100 です。フィルタはしないので、そのノードに置けなければ普通に別ノードへ行きます（その場合は復元）
-- 未バインド（WaitForFirstConsumer の新規ボリューム）、他ドライバのボリューム、所有情報が無い・読めない場合は何も優先しません。S3 の読み取りは 1 サイクルあたり既定 2 秒で打ち切ります
+- On ControllerUnpublish, the controller records the node it detached from as `lastNode` in `owner.json` (no extra S3 write)
+- In PreScore, the plugin reads `owner.json` for each bound hermit PVC of the pod and treats the attached node, or `lastNode` after a detach, as "the node with a local copy"
+- The score is 100 x the share of the pod's hermit volume capacity whose copy is on that node. The plugin never filters, so if that node cannot take the pod it goes elsewhere as usual (and the volume is restored there)
+- Unbound claims (new WaitForFirstConsumer volumes), volumes of other drivers, and missing or unreadable owner records give no preference. S3 reads are cut off after 2s per scheduling cycle by default
 
-リリースの `hermit-scheduler.yaml`（または `kubectl apply -k deploy/scheduler/`）で入ります。S3 の設定と認証情報はドライバの ConfigMap / Secret `hermit-csi` を共有します。
+Install it with the release's `hermit-scheduler.yaml` (or `kubectl apply -k deploy/scheduler/`). It shares the driver's S3 settings and credentials (ConfigMap / Secret `hermit-csi`).
 
-使う Pod は `spec.schedulerName: hermit-scheduler` を指定します（StatefulSet なら Pod テンプレートに）。
-既定のスケジューラはそのまま動き続けます。プラグインの重み（既定 10）は `deploy/scheduler/config.yaml` で調整できます。
+Pods opt in with `spec.schedulerName: hermit-scheduler` (for a StatefulSet, in its pod template).
+The default scheduler keeps running. The plugin weight (default 10) can be tuned in `deploy/scheduler/config.yaml`.
 
-## ディレクトリ
+## Layout
 
 ```
-cmd/hermit-csi/     エントリポイント（--mode=controller|node）
-pkg/store/         S3 ラッパー（条件付き書き込み）とテスト用インメモリ実装
-pkg/manifest/      S3 上のレイアウトとマニフェスト
-pkg/backup/        差分バックアップ／並列復元／GC（LVM 非依存）
-pkg/lvm/           lvcreate / thin_delta / thin_dump のラッパーと XML パーサ
-pkg/driver/        CSI Identity / Controller / Node、バックアップループ、スナップショットエージェント
-deploy/            CSIDriver, RBAC, Controller Deployment, Node DaemonSet, StorageClass
-hack/it-setup.sh   結合テスト用に loop デバイス上へ thin pool を作るスクリプト
-scheduler/         HermitLocality スケジューラプラグイン（別 Go モジュール。k8s.io/kubernetes に依存）
-deploy/scheduler/  hermit-scheduler の設定、RBAC、Deployment
+cmd/hermit-csi/     entry point (--mode=controller|node)
+pkg/store/         S3 wrapper (conditional writes) and an in-memory implementation for tests
+pkg/manifest/      S3 layout and manifests
+pkg/backup/        incremental backup / parallel restore / GC (LVM-independent)
+pkg/lvm/           wrappers for lvcreate / thin_delta / thin_dump and their XML parser
+pkg/driver/        CSI Identity / Controller / Node, backup loop, snapshot agent
+deploy/            CSIDriver, RBAC, controller Deployment, node DaemonSet, StorageClass
+hack/it-setup.sh   creates thin pools on loop devices for the integration tests
+scheduler/         HermitLocality scheduler plugin (separate Go module, depends on k8s.io/kubernetes)
+deploy/scheduler/  hermit-scheduler configuration, RBAC, Deployment
+test/e2e/          kind end-to-end test (run.sh, cluster config, kustomize overlay)
 ```
 
-## テスト
+## Tests
 
 ```sh
-go test -race ./...                      # 単体 + E2E（フェイク LVM とインメモリ S3）
+go test -race ./...                      # unit + E2E (fake LVM and in-memory S3)
+(cd scheduler && go test -race ./...)    # scheduler plugin
 ```
 
-E2E テストは CSI の RPC を実際の順序で呼び、次の内容を検証します。
-- ノード間移動でデータが一致すること
-- 小さな書き込みでは 1 チャンクしか上がらないこと
-- 復元後のバックアップが増分になること
-- 強制デタッチ後のゾンビノードがフェンスされること
-- 使用中スナップショットと、スナップショットからの復元
-- GC がスナップショット参照を守ること
+The E2E tests call the CSI RPCs in the order Kubernetes does and check that:
+- data matches after moving a volume between nodes
+- a small write uploads only one chunk
+- the backup after a restore is incremental
+- a zombie node is fenced after a force detach
+- in-use snapshots work, and volumes can be restored from snapshots
+- GC keeps chunks referenced by snapshots
 
-結合テスト（root、実 LVM、MinIO）:
+Integration tests (root, real LVM, MinIO):
 
-上の E2E シナリオを実 LVM で動かすほか、Filesystem モード（ext4 / xfs）を検証します。
-NodeStage でのフォーマットとマウント、復元後に再フォーマットせずマウントすること、マウント中バックアップの `fsfreeze`（fsync していない書き込みも含まれること）、
-フェンス後の旧ノードのアンマウント、使用中スナップショットからの作成、が対象です。`mkfs.ext4`、`mkfs.xfs`、`fsfreeze` が必要です。
+They run the E2E scenarios above on real LVM, and also test Filesystem mode (ext4 / xfs):
+formatting and mounting in NodeStage, mounting a restored volume without reformatting it, `fsfreeze` during backups of a mounted filesystem (writes that were never fsynced are included),
+unmounting on a fenced old node, and creating volumes from in-use snapshots. They need `mkfs.ext4`, `mkfs.xfs` and `fsfreeze`.
 
 ```sh
-# OSS 版 MinIO はアーカイブ済みで、イメージもバイナリも配布されていないため、最終リリースをソースからビルドする
+# Open-source MinIO is archived and no images or binaries are published anymore, so build the last release from source
 git clone --depth 1 --branch RELEASE.2025-10-15T17-29-55Z https://github.com/minio/minio.git /tmp/minio-src
 (cd /tmp/minio-src && CGO_ENABLED=0 go build -o /tmp/minio .)
 MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin /tmp/minio server /tmp/minio-data --address 127.0.0.1:9000 &
@@ -115,49 +117,49 @@ go test -c -tags integration -o driver.test ./pkg/driver/ && sudo -E ./driver.te
 sudo hack/it-setup.sh down
 ```
 
-CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブを実行します。
-- **unit**: gofmt / vet / `-race` テスト / カバレッジ
-- **integration**: loop デバイス上の 2 つの thin pool と MinIO を使った結合テスト
-- **scheduler**: スケジューラプラグインの vet / テスト（実際の kube-scheduler を fake API サーバーで動かし、Pod の配置先を検証）
-- **e2e**: kind クラスタ（ワーカー 2 台、loop デバイス上の thin pool）に deploy/ と deploy/scheduler/ を入れ、実際の kubelet・CSI サイドカー・snapshot-controller・hermit-scheduler で動かす（`test/e2e/run.sh`）。
-  Filesystem / Block ボリュームのノード間移動と復元、別ノードの方がリソース的に有利な状況でもローカルコピーのあるノードに戻ること、使用中スナップショットからの復元、削除を確認します
-- **image**: コンテナイメージ（ドライバとスケジューラ）のビルド
+CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
+- **unit**: gofmt / vet / `-race` tests / coverage
+- **integration**: integration tests on two thin pools on loop devices, with MinIO
+- **scheduler**: vet / tests of the scheduler plugin (runs the real kube-scheduler against a fake API server and checks where pods are bound)
+- **e2e**: installs deploy/ and deploy/scheduler/ into a kind cluster (two workers, thin pools on loop devices) and runs them with real kubelets, CSI sidecars, snapshot-controller and hermit-scheduler (`test/e2e/run.sh`).
+  It checks moving Filesystem / Block volumes between nodes with a restore, returning to the node with the local copy even when the other node is more attractive resource-wise, restoring from an in-use snapshot, and deletion
+- **image**: builds the container images (driver and scheduler)
 
-## デプロイ
+## Deploy
 
-1. 対象ノードに VG `hermit` と thin pool `pool` を作り、ラベル `hermit.csi.tsuzu.dev/enabled=true` を付けます。
-   コンテナからは modprobe できないので、カーネルモジュール `dm_thin_pool` と `dm_snapshot` もノードで読み込んでおきます（足りないとノードプラグインが起動時にエラーで止まります）。
+1. On each node, create the VG `hermit` with the thin pool `pool`, and label the node `hermit.csi.tsuzu.dev/enabled=true`.
+   Containers cannot modprobe, so also load the kernel modules `dm_thin_pool` and `dm_snapshot` on the node (without them, the node plugin exits at startup with an error naming them).
    ```sh
    vgcreate hermit /dev/nvme1n1
    lvcreate -l 95%FREE --chunksize 64k -T hermit/pool
    printf 'dm_thin_pool\ndm_snapshot\n' > /etc/modules-load.d/hermit.conf && systemctl restart systemd-modules-load
    ```
-2. スナップショットを使う場合は、snapshot CRD と snapshot-controller を入れておきます。
-3. S3 の設定と認証情報（ConfigMap / Secret `hermit-csi`）を編集して適用し、ドライバを入れます。
-   リリースのマニフェストは、そのリリースのイメージに `tag@digest` で固定されています。
+2. To use snapshots, install the snapshot CRDs and snapshot-controller.
+3. Edit and apply the S3 settings and credentials (ConfigMap / Secret `hermit-csi`), then install the driver.
+   Release manifests pin that release's images by `tag@digest`.
    ```sh
    V=v0.1.0   # https://github.com/tsuzu/hermit-csi/releases
    curl -fsSLO https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi-config.yaml
    $EDITOR hermit-csi-config.yaml && kubectl apply -f hermit-csi-config.yaml
    kubectl apply -f https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi.yaml
-   # 任意: ローカルコピーのあるノードを優先するスケジューラ（後述）
+   # Optional: the scheduler that prefers nodes with a local copy (see above)
    kubectl apply -f https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-scheduler.yaml
    ```
-   リポジトリから入れる場合は `kubectl apply -f deploy/secret.yaml`（編集後）、`kubectl apply -k deploy/`、`kubectl apply -k deploy/scheduler/` です（イメージは `latest`）。
-4. 動作例は `examples/block-pvc.yaml` にあります。
+   From the repository: `kubectl apply -f deploy/secret.yaml` (after editing it), `kubectl apply -k deploy/` and `kubectl apply -k deploy/scheduler/` (images tagged `latest`).
+4. See `examples/block-pvc.yaml` for an example.
 
-イメージは `ghcr.io/tsuzu/hermit-csi` と `ghcr.io/tsuzu/hermit-scheduler`（linux/amd64、linux/arm64）です。
+The images are `ghcr.io/tsuzu/hermit-csi` and `ghcr.io/tsuzu/hermit-scheduler` (linux/amd64, linux/arm64).
 
-### リリース手順
+### Releasing
 
-`main` の CI が green のコミットに `vX.Y.Z` タグを push すると、`.github/workflows/release.yaml` が両イメージを
-`X.Y.Z` / `X.Y` / `latest` で ghcr に push し、イメージを固定したマニフェスト（`hermit-csi.yaml`、`hermit-scheduler.yaml`、`hermit-csi-config.yaml`）を付けた GitHub Release を作ります。
+Pushing a `vX.Y.Z` tag on a commit whose CI on `main` is green makes `.github/workflows/release.yaml` push both images to ghcr
+as `X.Y.Z` / `X.Y` / `latest`, and create a GitHub release with manifests pinned to those images (`hermit-csi.yaml`, `hermit-scheduler.yaml`, `hermit-csi-config.yaml`).
 
-## 既知の制約 / TODO
+## Known limitations / TODO
 
-- Controller は 1 レプリカ前提です（ロックがプロセス内のため）
-- ボリューム拡張（ControllerExpandVolume）は未対応です
-- 復元は全量が終わるまで Pod が `ContainerCreating` のままです。ublk / NBD による遅延復元は将来の拡張です
-- コントローラとノードエージェント間の通信は Bearer トークン認証の HTTP です。本番では NetworkPolicy か mTLS を推奨します
-- コンテナ内では dmeventd による監視を無効にしているため、thin pool の自動拡張（`thin_pool_autoextend_threshold`）は効きません。pool の使用率はノード側で監視してください
-- チャンクは非圧縮です（zstd 圧縮は追加しやすい構造になっています）
+- The controller must run as a single replica (its locks are in-process)
+- Volume expansion (ControllerExpandVolume) is not supported
+- A pod stays in `ContainerCreating` until the full restore finishes. Lazy restore via ublk / NBD is a possible future extension
+- The controller talks to node agents over HTTP with bearer-token authentication. Use a NetworkPolicy or mTLS in production
+- dmeventd monitoring is disabled inside the container, so thin pool autoextend (`thin_pool_autoextend_threshold`) does not work. Monitor pool usage on the node
+- Chunks are not compressed (the code is structured so that zstd compression is easy to add)
