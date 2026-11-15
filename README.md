@@ -143,4 +143,5 @@ CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブ
 - ボリューム拡張（ControllerExpandVolume）は未対応です
 - 復元は全量が終わるまで Pod が `ContainerCreating` のままです。ublk / NBD による遅延復元は将来の拡張です
 - コントローラとノードエージェント間の通信は Bearer トークン認証の HTTP です。本番では NetworkPolicy か mTLS を推奨します
+- コンテナ内では dmeventd による監視を無効にしているため、thin pool の自動拡張（`thin_pool_autoextend_threshold`）は効きません。pool の使用率はノード側で監視してください
 - チャンクは非圧縮です（zstd 圧縮は追加しやすい構造になっています）
