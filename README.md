@@ -138,7 +138,7 @@ CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 3. Edit and apply the S3 settings and credentials (ConfigMap / Secret `hermit-csi`), then install the driver.
    Release manifests pin that release's images by `tag@digest`.
    ```sh
-   V=v0.1.0   # https://github.com/tsuzu/hermit-csi/releases
+   V=v0.2.0   # https://github.com/tsuzu/hermit-csi/releases
    curl -fsSLO https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi-config.yaml
    $EDITOR hermit-csi-config.yaml && kubectl apply -f hermit-csi-config.yaml
    kubectl apply -f https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi.yaml
@@ -173,7 +173,7 @@ from the store's own STS (`AssumeRoleWithWebIdentity` with the pods' service acc
 
 ### S3 credentials
 
-The controller, node plugin and scheduler read S3 with one of the following (roles need v0.2.0 or later; `<version>` below is a release tag):
+The controller, node plugin and scheduler read S3 with one of the following (roles need v0.2.0 or later):
 
 - **Static keys**: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the `hermit-csi` Secret.
 - **EKS IRSA** (IAM roles for service accounts): annotate the service accounts `hermit-csi-controller`,
@@ -183,7 +183,7 @@ The controller, node plugin and scheduler read S3 with one of the following (rol
   ```yaml
   # kustomization.yaml
   resources:
-    - https://github.com/tsuzu/hermit-csi/releases/download/<version>/hermit-csi.yaml
+    - https://github.com/tsuzu/hermit-csi/releases/download/v0.2.0/hermit-csi.yaml
   patches:
     - target: {kind: ServiceAccount, name: "hermit-csi-.*|hermit-scheduler"}
       patch: |-
@@ -199,9 +199,9 @@ The controller, node plugin and scheduler read S3 with one of the following (rol
   STS) in the ConfigMap.
   ```yaml
   resources:
-    - https://github.com/tsuzu/hermit-csi/releases/download/<version>/hermit-csi.yaml
+    - https://github.com/tsuzu/hermit-csi/releases/download/v0.2.0/hermit-csi.yaml
   components:
-    - https://github.com/tsuzu/hermit-csi/deploy/components/web-identity?ref=<version>
+    - https://github.com/tsuzu/hermit-csi/deploy/components/web-identity?ref=v0.2.0
   ```
 
 `S3_ROLE_ARN` without a token file assumes the role with whatever credentials the default chain finds (e.g. for a
