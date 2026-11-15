@@ -119,7 +119,7 @@ sudo hack/it-setup.sh down
 
 CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 - **unit**: gofmt / vet / `-race` tests / coverage
-- **integration**: integration tests on two thin pools on loop devices, with MinIO
+- **integration**: integration tests on two thin pools on loop devices, once with MinIO and once with SeaweedFS
 - **scheduler**: vet / tests of the scheduler plugin (runs the real kube-scheduler against a fake API server and checks where pods are bound)
 - **e2e**: installs deploy/ and deploy/scheduler/ into a kind cluster (two workers, thin pools on loop devices) and runs them with real kubelets, CSI sidecars, snapshot-controller and hermit-scheduler (`test/e2e/run.sh`).
   It checks moving Filesystem / Block volumes between nodes with a restore, returning to the node with the local copy even when the other node is more attractive resource-wise, restoring from an in-use snapshot, and deletion
@@ -149,6 +149,19 @@ CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 4. See `examples/block-pvc.yaml` for an example.
 
 The images are `ghcr.io/tsuzu/hermit-csi` and `ghcr.io/tsuzu/hermit-scheduler` (linux/amd64, linux/arm64).
+
+### S3 backends
+
+The store must support conditional PUTs (`If-Match` / `If-None-Match: *`) that are **atomic**: fencing relies on
+exactly one of several concurrent writers with the same precondition succeeding. CI runs the integration suite,
+including a concurrent conditional-write test, against:
+
+- **MinIO** (last open-source release, RELEASE.2025-10-15T17-29-55Z), also used by the kind e2e test with its STS
+- **SeaweedFS** 4.53 (`weed server -s3`). Conditional writes take a per-object lock in the filer; under contention the
+  losing writers' `412` responses are delayed in one-second steps while they wait for it, which only matters for
+  the rare race between the controller's fencing and an old node's backup
+
+Use `S3_PATH_STYLE: "true"` for both.
 
 ### S3 credentials
 

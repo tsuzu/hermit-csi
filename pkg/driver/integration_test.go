@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,3 +138,51 @@ func TestIntegrationMoveVolume(t *testing.T) { runMoveScenario(t, realCluster(t)
 func TestIntegrationReattach(t *testing.T)   { runReattachScenario(t, realCluster(t)) }
 func TestIntegrationFencing(t *testing.T)    { runFencingScenario(t, realCluster(t)) }
 func TestIntegrationSnapshots(t *testing.T)  { runSnapshotScenario(t, realCluster(t)) }
+
+// TestIntegrationStoreConditionalRace checks that conditional writes are
+// atomic, which fencing relies on: of many concurrent PUTs with the same
+// If-Match ETag (or If-None-Match on a new key), exactly one may succeed.
+// A backend that checks the precondition and then writes without a lock
+// lets several through.
+func TestIntegrationStoreConditionalRace(t *testing.T) {
+	s := realStore(t)
+	ctx := context.Background()
+	const writers, rounds = 16, 5
+
+	race := func(t *testing.T, key string, opts store.PutOpts) {
+		t.Helper()
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make([]error, writers)
+		for i := range writers {
+			wg.Go(func() {
+				<-start
+				_, errs[i] = s.Put(ctx, key, []byte(fmt.Sprintf("writer-%d", i)), opts)
+			})
+		}
+		close(start)
+		wg.Wait()
+		won := 0
+		for _, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case !errors.Is(err, store.ErrPrecondition):
+				t.Fatalf("unexpected error (want success or ErrPrecondition): %v", err)
+			}
+		}
+		if won != 1 {
+			t.Fatalf("%d of %d concurrent conditional PUTs succeeded, want exactly 1", won, writers)
+		}
+	}
+
+	for r := range rounds {
+		key := fmt.Sprintf("race-%d", r)
+		race(t, key, store.PutOpts{IfNoneMatch: true})
+		_, etag, err := s.Get(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		race(t, key, store.PutOpts{IfMatch: etag})
+	}
+}

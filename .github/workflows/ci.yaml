@@ -48,10 +48,15 @@ jobs:
         run: go test -race -count=1 ./...
 
   integration:
-    name: integration (real LVM thin pools + MinIO)
+    name: integration (real LVM thin pools + ${{ matrix.s3 }})
     runs-on: ubuntu-24.04
     needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        s3: [minio, seaweedfs]
     env:
+      SEAWEEDFS_VERSION: "4.53"
       HERMIT_IT_VG_A: it-a
       HERMIT_IT_VG_B: it-b
       HERMIT_IT_POOL: pool
@@ -67,9 +72,23 @@ jobs:
           go-version-file: go.mod
       - name: Install LVM tools
         run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools xfsprogs e2fsprogs
-      - uses: ./.github/actions/minio
+      - if: matrix.s3 == 'minio'
+        uses: ./.github/actions/minio
         with:
           bucket: ${{ env.HERMIT_IT_BUCKET }}
+      - name: Start SeaweedFS
+        if: matrix.s3 == 'seaweedfs'
+        run: |
+          printf '{"identities":[{"name":"hermit","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
+            "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" > "$RUNNER_TEMP/s3.json"
+          docker run -d --name seaweedfs -p 9000:8333 -v "$RUNNER_TEMP/s3.json:/etc/s3.json:ro" \
+            "chrislusf/seaweedfs:$SEAWEEDFS_VERSION" server -dir=/data -s3 -s3.config=/etc/s3.json -ip.bind=0.0.0.0
+          for i in $(seq 1 60); do
+            aws --endpoint-url "$HERMIT_IT_S3_ENDPOINT" s3 mb "s3://$HERMIT_IT_BUCKET" 2>/dev/null && break
+            sleep 1
+          done
+          aws --endpoint-url "$HERMIT_IT_S3_ENDPOINT" s3 ls "s3://$HERMIT_IT_BUCKET"
+          docker exec seaweedfs weed version
       - name: Create thin pools on loop devices
         run: sudo -E hack/it-setup.sh up
       - name: Build test binary
@@ -81,6 +100,7 @@ jobs:
         run: |
           sudo lvs -a -o+thin_id,lv_tags || true
           sudo dmsetup ls || true
+          docker logs seaweedfs 2>&1 | tail -50 || true
           tail -50 "$RUNNER_TEMP/minio.log" || true
       - name: Tear down
         if: always()
