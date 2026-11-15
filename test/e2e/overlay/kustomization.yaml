@@ -16,6 +16,8 @@ patches:
     patch: |-
       - {op: test, path: /spec/template/spec/containers/0/args/3, value: --vg=hermit}
       - {op: replace, path: /spec/template/spec/containers/0/args/3, value: --vg=$(NODE_NAME)}
+      # Fail fast instead of hanging if an LVM command gets stuck.
+      - {op: add, path: /spec/template/spec/containers/0/args/-, value: --lvm-timeout=2m}
   # One scheduler replica is enough here.
   - target: {kind: Deployment, name: hermit-scheduler}
     patch: |-

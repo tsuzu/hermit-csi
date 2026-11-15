@@ -1,0 +1,120 @@
+name: Release
+
+# Push a tag vX.Y.Z (after CI is green on that commit) to publish
+#   ghcr.io/tsuzu/hermit-csi:X.Y.Z and ghcr.io/tsuzu/hermit-scheduler:X.Y.Z
+#   (linux/amd64 + linux/arm64, also tagged latest)
+# and a GitHub release with install manifests pinned to those images.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: image ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - {name: hermit-csi, file: Dockerfile}
+          - {name: hermit-scheduler, file: scheduler/Dockerfile}
+    outputs:
+      digest-hermit-csi: ${{ steps.out.outputs.digest-hermit-csi }}
+      digest-hermit-scheduler: ${{ steps.out.outputs.digest-hermit-scheduler }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=${{ matrix.name }}
+            org.opencontainers.image.licenses=
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ github.ref_name }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release-${{ matrix.name }}
+          cache-to: type=gha,scope=release-${{ matrix.name }},mode=max
+      - id: out
+        run: echo "digest-${{ matrix.name }}=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+  manifests:
+    name: release manifests
+    runs-on: ubuntu-24.04
+    needs: images
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      OWNER: ${{ github.repository_owner }}
+      CSI_DIGEST: ${{ needs.images.outputs.digest-hermit-csi }}
+      SCHED_DIGEST: ${{ needs.images.outputs.digest-hermit-scheduler }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build manifests pinned to the released images
+        run: |
+          set -euo pipefail
+          tag=${VERSION#v}
+          mkdir -p dist
+          # Overlays that pin tag@digest: readable, and immune to the tag being moved.
+          pin() { # dir image digest -> overlay dir
+            mkdir -p "rel/$2"
+            printf 'resources: [../../%s]\nimages:\n  - {name: ghcr.io/tsuzu/%s, newName: ghcr.io/%s/%s, newTag: "%s@%s"}\n' \
+              "$1" "$2" "$OWNER" "$2" "$tag" "$3" > "rel/$2/kustomization.yaml"
+          }
+          pin deploy hermit-csi "$CSI_DIGEST"
+          pin deploy/scheduler hermit-scheduler "$SCHED_DIGEST"
+          kubectl kustomize rel/hermit-csi > dist/hermit-csi.yaml
+          kubectl kustomize rel/hermit-scheduler > dist/hermit-scheduler.yaml
+          cp deploy/secret.yaml dist/hermit-csi-config.yaml
+          grep -n "image:" dist/*.yaml
+          ! grep -n ":latest" dist/hermit-csi.yaml dist/hermit-scheduler.yaml
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=https://github.com/${{ github.repository }}/releases/download/$VERSION
+          cat > notes.md <<EOF
+          ## Install
+
+          \`\`\`sh
+          # 1. S3 settings and credentials (edit first)
+          curl -fsSLO $base/hermit-csi-config.yaml && \$EDITOR hermit-csi-config.yaml
+          kubectl apply -f hermit-csi-config.yaml
+          # 2. Driver (controller, node DaemonSet, CSIDriver, StorageClass, VolumeSnapshotClass)
+          kubectl apply -f $base/hermit-csi.yaml
+          # 3. Optional: hermit-scheduler (prefer nodes that already hold a pod's volumes)
+          kubectl apply -f $base/hermit-scheduler.yaml
+          \`\`\`
+
+          Nodes need the VG \`hermit\` with thin pool \`pool\` and the label \`hermit.csi.tsuzu.dev/enabled=true\`; see the README.
+
+          ## Images
+
+          - \`ghcr.io/$OWNER/hermit-csi:${VERSION#v}@$CSI_DIGEST\`
+          - \`ghcr.io/$OWNER/hermit-scheduler:${VERSION#v}@$SCHED_DIGEST\`
+          EOF
+          gh release create "$VERSION" dist/*.yaml --title "$VERSION" --notes-file notes.md --verify-tag

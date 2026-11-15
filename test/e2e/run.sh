@@ -86,6 +86,45 @@ EOF
   "${K[@]}" -n kube-system rollout status deploy/hermit-csi-controller --timeout=3m
   "${K[@]}" -n kube-system rollout status ds/hermit-csi-node --timeout=3m
   "${K[@]}" -n kube-system rollout status deploy/hermit-scheduler --timeout=3m
+  preflight
+}
+
+driver_pod() {
+  "${K[@]}" -n kube-system get pod -l app=hermit-csi-node --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}'
+}
+
+# preflight: create and remove a thin LV from inside each node plugin, the
+# way the driver does. If it hangs, show where (wchan, kernel stack, LVM's
+# own debug log) instead of timing out a pod much later.
+preflight() {
+  log "preflight: thin LV inside each node plugin"
+  local n
+  for n in "${WORKERS[@]}"; do
+    "${K[@]}" -n kube-system exec "$(driver_pod "$n")" -c driver -- bash -c '
+vg=$1
+lvcreate -vvvv -y --thin -V 64m -n e2e-preflight "$vg/pool" > /tmp/preflight.log 2>&1 &
+pid=$!
+for _ in $(seq 1 30); do kill -0 $pid 2>/dev/null || break; sleep 1; done
+if kill -0 $pid 2>/dev/null; then
+  echo "lvcreate on $vg still running after 30s; processes:"
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    echo "$p [$(cat $d/wchan 2>/dev/null)] $(tr "\0" " " < $d/cmdline 2>/dev/null)"
+  done
+  for d in /proc/[0-9]*; do
+    case "$(tr "\0" " " < $d/cmdline 2>/dev/null)" in
+      *lvcreate*|*dmeventd*|*thin_check*|*udevadm*|*modprobe*|*dmsetup*)
+        echo "--- kernel stack of ${d#/proc/}: $(tr "\0" " " < $d/cmdline)"; cat $d/stack ;;
+    esac
+  done
+  echo "--- last lines of lvcreate -vvvv"; tail -60 /tmp/preflight.log
+  exit 1
+fi
+if ! wait $pid; then tail -60 /tmp/preflight.log; exit 1; fi
+lvs "$vg"
+lvremove -y "$vg/e2e-preflight"
+' _ "$n" || fail "LVM preflight failed on $n"
+  done
 }
 
 down() {
@@ -184,9 +223,7 @@ delete_pod() {
 
 # driver_log_count NODE MESSAGE PV: occurrences of a driver log line for PV.
 driver_log_count() {
-  local pod
-  pod=$("${K[@]}" -n kube-system get pod -l app=hermit-csi-node --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}')
-  "${K[@]}" -n kube-system logs "$pod" -c driver | grep -F "\"$2\"" | grep -cF "volume=\"$3\"" || true
+  "${K[@]}" -n kube-system logs "$(driver_pod "$1")" -c driver | grep -F "\"$2\"" | grep -cF "volume=\"$3\"" || true
 }
 
 expect_eq() { [ "$2" = "$3" ] || fail "$1: got '$2', want '$3'"; echo "ok: $1 = $3"; }

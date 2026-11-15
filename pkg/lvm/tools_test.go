@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tsuzu/hermit-csi/pkg/backup"
 )
@@ -78,5 +80,20 @@ func TestRealThinTools(t *testing.T) {
 	gotChunks := backup.ChunksForRanges(mapped, blk, 100)
 	if !reflect.DeepEqual(gotChunks, []int64{0, 1, 9}) {
 		t.Fatalf("MappedRanges chunks = %v", gotChunks)
+	}
+}
+
+func TestCommandTimeout(t *testing.T) {
+	v := &VG{Name: "vg", Pool: "pool", Timeout: 50 * time.Millisecond, Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		<-ctx.Done() // a hung command
+		return nil, ctx.Err()
+	}}
+	start := time.Now()
+	err := v.CreateThin(context.Background(), "lv", 1<<20)
+	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("err = %v, want a deadline error", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("timeout not applied")
 	}
 }

@@ -42,6 +42,7 @@ func main() {
 		interval   = flag.Duration("backup-interval", 5*time.Minute, "default periodic backup interval (node); the StorageClass parameter backupInterval overrides it per volume, 0 disables it for volumes without one")
 		agentAddr  = flag.String("agent-listen", ":9810", "snapshot agent listen address (node)")
 		advertise  = flag.String("agent-advertise", "", "snapshot agent address the controller should use, host:port (node)")
+		lvmTimeout = flag.Duration("lvm-timeout", 5*time.Minute, "timeout for each LVM / thin-provisioning-tools command (node); 0 = none")
 	)
 	flag.Parse()
 
@@ -72,7 +73,7 @@ func main() {
 		GCInterval:     *gcInterval,
 		AgentToken:     os.Getenv("HERMIT_AGENT_TOKEN"),
 		NodeID:         *nodeID,
-		VG:             &lvm.VG{Name: *vgName, Pool: *pool},
+		VG:             &lvm.VG{Name: *vgName, Pool: *pool, Timeout: *lvmTimeout},
 		StateDir:       *stateDir,
 		BackupInterval: *interval,
 		AgentListen:    *agentAddr,

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tsuzu/hermit-csi/pkg/backup"
 )
@@ -39,6 +40,9 @@ type VG struct {
 	Name string
 	Pool string
 	Run  Runner
+	// Timeout bounds each command (0 = none). A hung lvcreate or thin_delta
+	// would otherwise block every later operation on the volume forever.
+	Timeout time.Duration
 
 	// Only one metadata snapshot can be reserved per pool at a time.
 	metaMu sync.Mutex
@@ -57,7 +61,16 @@ func (v *VG) run(ctx context.Context, name string, args ...string) ([]byte, erro
 	if r == nil {
 		r = DefaultRunner
 	}
-	return r(ctx, name, args...)
+	if v.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, v.Timeout)
+		defer cancel()
+	}
+	out, err := r(ctx, name, args...)
+	if err != nil && ctx.Err() != nil {
+		err = fmt.Errorf("%w (%v)", err, ctx.Err())
+	}
+	return out, err
 }
 
 func (v *VG) path(lv string) string { return v.Name + "/" + lv }
