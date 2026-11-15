@@ -1,0 +1,30 @@
+{
+  "sts": {"tokenDuration": "1h", "maxSessionLength": "12h", "issuer": "seaweedfs-sts",
+          "signingKey": "aGVybWl0LWUyZS1zdHMtc2lnbmluZy1rZXktMzItYnl0ZXM="},
+  "providers": [{
+    "name": "kind", "type": "oidc", "enabled": true,
+    "config": {
+      "issuer": "https://kubernetes.default.svc.cluster.local",
+      "clientIds": ["sts.amazonaws.com"],
+      "jwksUri": "JWKS_URI",
+      "tlsCaCert": "/etc/kind-ca.crt"
+    }
+  }],
+  "policy": {"defaultEffect": "Deny"},
+  "roles": [{
+    "roleName": "HermitRole",
+    "roleArn": "arn:aws:iam::role/HermitRole",
+    "trustPolicy": {"Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Principal": {"Federated": "kind"}, "Action": ["sts:AssumeRoleWithWebIdentity"],
+      "Condition": {"StringLike": {"oidc:sub": "system:serviceaccount:kube-system:hermit-*"}}
+    }]},
+    "attachedPolicies": ["HermitS3"]
+  }],
+  "policies": [{
+    "name": "HermitS3",
+    "document": {"Version": "2012-10-17", "Statement": [
+      {"Effect": "Allow", "Action": ["s3:*"], "Resource": ["arn:aws:s3:::hermit-e2e", "arn:aws:s3:::hermit-e2e/*"]},
+      {"Effect": "Allow", "Action": ["sts:ValidateSession"], "Resource": ["*"]}
+    ]}
+  }]
+}

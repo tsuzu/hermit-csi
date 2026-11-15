@@ -107,11 +107,17 @@ jobs:
         run: sudo -E hack/it-setup.sh down
 
   e2e:
-    name: e2e (kind, released manifests)
+    name: e2e (kind, released manifests, ${{ matrix.s3 }} STS)
     runs-on: ubuntu-24.04
     needs: [unit, scheduler]
+    strategy:
+      fail-fast: false
+      matrix:
+        s3: [minio, seaweedfs]
     env:
       KIND_VERSION: v0.33.0
+      E2E_S3: ${{ matrix.s3 }}
+      SEAWEEDFS_IMAGE: chrislusf/seaweedfs:4.53
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -124,7 +130,8 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
           kind version && kubectl version --client
       # run.sh starts it once the cluster exists (its STS trusts the cluster).
-      - uses: ./.github/actions/minio
+      - if: matrix.s3 == 'minio'
+        uses: ./.github/actions/minio
         with:
           start: "false"
       - uses: docker/setup-buildx-action@v3

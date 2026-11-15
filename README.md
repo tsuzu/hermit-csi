@@ -121,7 +121,7 @@ CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 - **unit**: gofmt / vet / `-race` tests / coverage
 - **integration**: integration tests on two thin pools on loop devices, once with MinIO and once with SeaweedFS
 - **scheduler**: vet / tests of the scheduler plugin (runs the real kube-scheduler against a fake API server and checks where pods are bound)
-- **e2e**: installs deploy/ and deploy/scheduler/ into a kind cluster (two workers, thin pools on loop devices) and runs them with real kubelets, CSI sidecars, snapshot-controller and hermit-scheduler (`test/e2e/run.sh`).
+- **e2e** (once with MinIO, once with SeaweedFS, S3 credentials from their STS only): installs deploy/ and deploy/scheduler/ into a kind cluster (two workers, thin pools on loop devices) and runs them with real kubelets, CSI sidecars, snapshot-controller and hermit-scheduler (`test/e2e/run.sh`).
   It checks moving Filesystem / Block volumes between nodes with a restore, returning to the node with the local copy even when the other node is more attractive resource-wise, restoring from an in-use snapshot, and deletion
 - **image**: builds the container images (driver and scheduler)
 
@@ -156,12 +156,20 @@ The store must support conditional PUTs (`If-Match` / `If-None-Match: *`) that a
 exactly one of several concurrent writers with the same precondition succeeding. CI runs the integration suite,
 including a concurrent conditional-write test, against:
 
-- **MinIO** (last open-source release, RELEASE.2025-10-15T17-29-55Z), also used by the kind e2e test with its STS
+- **MinIO** (last open-source release, RELEASE.2025-10-15T17-29-55Z)
 - **SeaweedFS** 4.53 (`weed server -s3`). Conditional writes take a per-object lock in the filer; under contention the
   losing writers' `412` responses are delayed in one-second steps while they wait for it, which only matters for
   the rare race between the controller's fencing and an old node's backup
 
-Use `S3_PATH_STYLE: "true"` for both.
+Use `S3_PATH_STYLE: "true"` for both. The kind e2e test runs once per backend, each time with S3 credentials only
+from the store's own STS (`AssumeRoleWithWebIdentity` with the pods' service account tokens, see below):
+
+- MinIO: `MINIO_IDENTITY_OPENID_CONFIG_URL` pointing at the cluster's discovery document,
+  `MINIO_IDENTITY_OPENID_CLIENT_ID=sts.amazonaws.com` and a role policy; the role ARN is the one MinIO prints at startup.
+- SeaweedFS: `-s3.iam.config` with an `oidc` provider for the cluster's issuer and a role whose trust policy only
+  admits the hermit service accounts (`oidc:sub` like `system:serviceaccount:kube-system:hermit-*`) and whose policy
+  only covers the hermit bucket; see [`test/e2e/seaweedfs-iam.json`](test/e2e/seaweedfs-iam.json).
+  Set `S3_STS_ENDPOINT` to the S3 endpoint and `S3_ROLE_ARN` to the role (`arn:aws:iam::role/HermitRole` there).
 
 ### S3 credentials
 
@@ -199,8 +207,8 @@ The controller, node plugin and scheduler read S3 with one of the following (rol
 `S3_ROLE_ARN` without a token file assumes the role with whatever credentials the default chain finds (e.g. for a
 bucket in another account). All settings are also flags: `--s3-role-arn`, `--s3-web-identity-token-file`,
 `--s3-role-session-name`, `--sts-endpoint`. Temporary credentials are refreshed before they expire, rereading the
-token file, so rotated projected tokens are picked up. The kind e2e test runs with web identity only (MinIO's STS
-trusting the cluster's service account issuer) and no static keys at all.
+token file, so rotated projected tokens are picked up. The kind e2e test runs with web identity only (MinIO's or
+SeaweedFS's STS trusting the cluster's service account issuer) and no static keys at all.
 
 Permissions on the bucket (and prefix): the controller and node plugin need `s3:GetObject`, `s3:PutObject`,
 `s3:DeleteObject` and `s3:ListBucket`; the scheduler only needs `s3:GetObject` on `volumes/*/owner.json`.

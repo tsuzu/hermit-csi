@@ -8,11 +8,12 @@
 # Prerequisites: root via sudo, docker, kind, kubectl, aws CLI, python3, lvm2
 # and thin-provisioning-tools on the host, the images
 # ghcr.io/tsuzu/hermit-csi:e2e and ghcr.io/tsuzu/hermit-scheduler:e2e built
-# locally, and a MinIO server binary at $MINIO_BIN.
+# locally, and either a MinIO server binary at $MINIO_BIN (E2E_S3=minio, the
+# default) or docker access to the SeaweedFS image (E2E_S3=seaweedfs).
 #
 # S3 access uses no static keys: the pods' projected service account tokens
 # are exchanged for temporary credentials with AssumeRoleWithWebIdentity
-# (deploy/components/web-identity). MinIO plays STS, trusting the kind API
+# (deploy/components/web-identity). The S3 store's own STS trusts the kind API
 # server as its OpenID provider, so this exercises the IRSA code path.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -22,6 +23,8 @@ NODE_IMAGE=${NODE_IMAGE:-kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd
 SNAPSHOTTER_VERSION=${SNAPSHOTTER_VERSION:-v8.2.0} # matches the csi-snapshotter sidecar
 BUSYBOX=${BUSYBOX:-busybox:1.37}
 S3_PORT=${S3_PORT:-9000}
+E2E_S3=${E2E_S3:-minio} # minio | seaweedfs
+SEAWEEDFS_IMAGE=${SEAWEEDFS_IMAGE:-chrislusf/seaweedfs:4.53}
 MINIO_BIN=${MINIO_BIN:-$HOME/minio-bin/minio}
 MINIO_DIR=${MINIO_DIR:-/tmp/hermit-e2e-minio}
 MINIO_ROOT=minioadmin # only used here, to create the bucket
@@ -69,7 +72,11 @@ up() {
   "${K[@]}" apply -k "https://github.com/kubernetes-csi/external-snapshotter/client/config/crd?ref=$SNAPSHOTTER_VERSION"
   "${K[@]}" apply -k "https://github.com/kubernetes-csi/external-snapshotter/deploy/kubernetes/snapshot-controller?ref=$SNAPSHOTTER_VERSION"
 
-  start_minio
+  case $E2E_S3 in
+    minio) start_minio ;;
+    seaweedfs) start_seaweedfs ;;
+    *) fail "unknown E2E_S3=$E2E_S3" ;;
+  esac
 
   log "hermit-csi + hermit-scheduler"
   gw=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1)
@@ -142,23 +149,53 @@ lvremove -y "$vg/e2e-preflight-snap" "$vg/e2e-preflight"
   done
 }
 
+# oidc_prep: let the S3 store's STS fetch the cluster's OpenID discovery
+# document and JWKS anonymously, and save the cluster CA to $1. Sets CP_IP.
+oidc_prep() {
+  CP_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$CLUSTER-control-plane" | awk '{print $1}')
+  "${K[@]}" create clusterrolebinding hermit-e2e-oidc-discovery \
+    --clusterrole=system:service-account-issuer-discovery --group=system:unauthenticated \
+    --dry-run=client -o yaml | "${K[@]}" apply -f -
+  docker cp "$CLUSTER-control-plane:/etc/kubernetes/pki/ca.crt" "$1"
+  curl -sf --cacert "$1" "https://$CP_IP:6443/.well-known/openid-configuration" \
+    || fail "OpenID discovery of the kind API server is not reachable"
+  echo
+}
+
+# start_seaweedfs: SeaweedFS (weed server -s3) on the kind network, with an
+# STS trusting the cluster's tokens for the hermit service accounts only
+# (seaweedfs-iam.json). Sets ROLE_ARN.
+start_seaweedfs() {
+  log "SeaweedFS ($SEAWEEDFS_IMAGE) with STS trusting the cluster's service account issuer"
+  rm -rf "$MINIO_DIR" && mkdir -p "$MINIO_DIR"
+  oidc_prep "$MINIO_DIR/kind-ca.crt"
+  sed "s#JWKS_URI#https://$CP_IP:6443/openid/v1/jwks#" seaweedfs-iam.json > "$MINIO_DIR/iam.json"
+  # Static identity only for creating the bucket from the host.
+  printf '{"identities":[{"name":"admin","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List"]}]}' \
+    "$MINIO_ROOT" "$MINIO_ROOT" > "$MINIO_DIR/s3.json"
+  docker rm -f "$CLUSTER-seaweedfs" >/dev/null 2>&1 || true
+  docker run -d --name "$CLUSTER-seaweedfs" --network kind -p "$S3_PORT:8333" \
+    -v "$MINIO_DIR/s3.json:/etc/s3.json:ro" -v "$MINIO_DIR/iam.json:/etc/iam.json:ro" \
+    -v "$MINIO_DIR/kind-ca.crt:/etc/kind-ca.crt:ro" \
+    "$SEAWEEDFS_IMAGE" server -dir=/data -s3 -s3.config=/etc/s3.json -s3.iam.config=/etc/iam.json -ip.bind=0.0.0.0
+  for _ in $(seq 1 60); do
+    AWS_ACCESS_KEY_ID=$MINIO_ROOT AWS_SECRET_ACCESS_KEY=$MINIO_ROOT AWS_REGION=us-east-1 \
+      aws --endpoint-url "http://127.0.0.1:$S3_PORT" s3 mb "s3://$S3_BUCKET" 2>/dev/null && break
+    sleep 1
+  done
+  AWS_ACCESS_KEY_ID=$MINIO_ROOT AWS_SECRET_ACCESS_KEY=$MINIO_ROOT AWS_REGION=us-east-1 \
+    aws --endpoint-url "http://127.0.0.1:$S3_PORT" s3 ls "s3://$S3_BUCKET" || fail "SeaweedFS is not serving S3"
+  ROLE_ARN=arn:aws:iam::role/HermitRole
+}
+
 # start_minio: MinIO on the host, with the kind API server as OpenID provider
 # for its STS. Sets ROLE_ARN to the role that maps those tokens to readwrite.
 start_minio() {
   log "MinIO with STS trusting the cluster's service account issuer"
-  local cp_ip
-  cp_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$CLUSTER-control-plane" | awk '{print $1}')
-  # MinIO fetches the discovery document and JWKS anonymously.
-  "${K[@]}" create clusterrolebinding hermit-e2e-oidc-discovery \
-    --clusterrole=system:service-account-issuer-discovery --group=system:unauthenticated \
-    --dry-run=client -o yaml | "${K[@]}" apply -f -
   rm -rf "$MINIO_DIR" && mkdir -p "$MINIO_DIR/data" "$MINIO_DIR/certs/CAs"
-  docker cp "$CLUSTER-control-plane:/etc/kubernetes/pki/ca.crt" "$MINIO_DIR/certs/CAs/kind-ca.crt"
-  curl -sf --cacert "$MINIO_DIR/certs/CAs/kind-ca.crt" "https://$cp_ip:6443/.well-known/openid-configuration" \
-    || fail "OpenID discovery of the kind API server is not reachable"
-  echo
+  oidc_prep "$MINIO_DIR/certs/CAs/kind-ca.crt"
   MINIO_ROOT_USER=$MINIO_ROOT MINIO_ROOT_PASSWORD=$MINIO_ROOT \
-  MINIO_IDENTITY_OPENID_CONFIG_URL="https://$cp_ip:6443/.well-known/openid-configuration" \
+  MINIO_IDENTITY_OPENID_CONFIG_URL="https://$CP_IP:6443/.well-known/openid-configuration" \
   MINIO_IDENTITY_OPENID_CLIENT_ID=sts.amazonaws.com \
   MINIO_IDENTITY_OPENID_ROLE_POLICY=readwrite \
     nohup "$MINIO_BIN" server "$MINIO_DIR/data" --address "0.0.0.0:$S3_PORT" --certs-dir "$MINIO_DIR/certs" \
@@ -185,6 +222,7 @@ start_minio() {
 
 down() {
   [ -f "$MINIO_DIR/pid" ] && kill "$(cat "$MINIO_DIR/pid")" 2>/dev/null || true
+  docker rm -f "$CLUSTER-seaweedfs" >/dev/null 2>&1 || true
   kind delete cluster --name "$CLUSTER" || true
   for vg in "${WORKERS[@]}"; do
     sudo vgremove -ff -y "$vg" 2>/dev/null || true
@@ -211,8 +249,8 @@ dump() {
   done
   sudo lvs -a -o+thin_id,lv_tags
   sudo dmsetup ls
-  echo "----- MinIO"
-  tail -60 "$MINIO_DIR/minio.log"
+  echo "----- S3 store ($E2E_S3)"
+  if [ "$E2E_S3" = seaweedfs ]; then docker logs "$CLUSTER-seaweedfs" 2>&1 | tail -80; else tail -60 "$MINIO_DIR/minio.log"; fi
 }
 
 # ------------------------------------------------------------------ helpers
