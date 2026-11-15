@@ -29,7 +29,7 @@ spec:
             - --vg=hermit
             - --thin-pool=pool
             - --state-dir=/var/lib/hermit
-            - --backup-interval=5m
+            - --backup-interval=5m # default; StorageClass parameter backupInterval overrides it
             - --agent-listen=:9810
             - --agent-advertise=$(POD_IP):9810
             - --s3-bucket=$(S3_BUCKET)

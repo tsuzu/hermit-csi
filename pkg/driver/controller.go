@@ -63,6 +63,15 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if err := validateCaps(req.GetVolumeCapabilities()); err != nil {
 		return nil, err
 	}
+	interval, err := backupIntervalFrom(req.GetParameters())
+	if err != nil {
+		return nil, err
+	}
+	var vctx map[string]string
+	if interval > 0 {
+		// Recorded in the PV; kubelet hands it to NodeStage.
+		vctx = map[string]string{ParamBackupInterval: interval.String()}
+	}
 	defer c.locks.lock(vol)()
 
 	size := req.GetCapacityRange().GetRequiredBytes()
@@ -76,7 +85,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		if m.SizeBytes < size || (limit > 0 && m.SizeBytes > limit) {
 			return nil, status.Errorf(codes.AlreadyExists, "volume %s exists with size %d", vol, m.SizeBytes)
 		}
-		return c.volumeResponse(m, req.GetVolumeContentSource()), nil
+		return c.volumeResponse(m, req.GetVolumeContentSource(), vctx), nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, toStatus(err)
 	}
@@ -134,14 +143,15 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, toStatus(err)
 	}
 	klog.InfoS("volume created", "volume", vol, "size", m.SizeBytes, "chunks", m.NumChunks(), "used", m.UsedBytes())
-	return c.volumeResponse(m, src), nil
+	return c.volumeResponse(m, src, vctx), nil
 }
 
-func (c *Controller) volumeResponse(m *manifest.Manifest, src *csi.VolumeContentSource) *csi.CreateVolumeResponse {
+func (c *Controller) volumeResponse(m *manifest.Manifest, src *csi.VolumeContentSource, vctx map[string]string) *csi.CreateVolumeResponse {
 	return &csi.CreateVolumeResponse{Volume: &csi.Volume{
 		VolumeId:      m.VolumeID,
 		CapacityBytes: m.SizeBytes,
 		ContentSource: src,
+		VolumeContext: vctx,
 		// No AccessibleTopology: the volume can be staged on any node.
 	}}
 }

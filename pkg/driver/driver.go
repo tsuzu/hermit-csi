@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +30,40 @@ const (
 
 	// publishContextEpoch carries the ownership epoch from ControllerPublish to NodeStage.
 	publishContextEpoch = "hermit.csi.tsuzu.dev/epoch"
+
+	// ParamBackupInterval is the StorageClass parameter (and volume context
+	// key) that overrides the node's --backup-interval for one volume.
+	ParamBackupInterval = "backupInterval"
+	// MinBackupInterval is the shortest per-volume interval, and the
+	// granularity of the node's backup scheduler.
+	MinBackupInterval = 10 * time.Second
 )
+
+// parseBackupInterval validates a per-volume backup interval ("30s", "2m", ...).
+func parseBackupInterval(v string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: %w", ParamBackupInterval, v, err)
+	}
+	if d < MinBackupInterval {
+		return 0, fmt.Errorf("%s %q: must be at least %s", ParamBackupInterval, v, MinBackupInterval)
+	}
+	return d, nil
+}
+
+// backupIntervalFrom reads the per-volume interval from StorageClass
+// parameters or a volume context; 0 means "use the node default".
+func backupIntervalFrom(m map[string]string) (time.Duration, error) {
+	v, ok := m[ParamBackupInterval]
+	if !ok {
+		return 0, nil
+	}
+	d, err := parseBackupInterval(v)
+	if err != nil {
+		return 0, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return d, nil
+}
 
 // Config is shared by both modes; fields irrelevant to a mode are ignored.
 type Config struct {

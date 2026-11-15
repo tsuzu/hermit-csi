@@ -55,9 +55,15 @@ type Node struct {
 	mounter *mount.SafeFormatAndMount
 	locks   keyLock
 	freeze  func(ctx context.Context, path string, freeze bool) error
+	now     func() time.Time
 
 	opMu sync.Mutex
 	ops  map[string]*op
+
+	// Start of the last periodic backup per volume (in memory: after a
+	// restart every staged volume is backed up on the first tick).
+	schedMu    sync.Mutex
+	lastBackup map[string]time.Time
 }
 
 type op struct {
@@ -84,7 +90,10 @@ func newNode(cfg Config, vg thinVG) *Node {
 		states:  stateStore{dir: cfg.StateDir},
 		mounter: &mount.SafeFormatAndMount{Interface: mount.New(""), Exec: utilexec.New()},
 		freeze:  fsfreeze,
+		now:     time.Now,
 		ops:     map[string]*op{},
+
+		lastBackup: map[string]time.Time{},
 	}
 }
 
@@ -165,9 +174,13 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, status.Errorf(codes.InvalidArgument, "publish context lacks %s", publishContextEpoch)
 	}
 	block := req.GetVolumeCapability().GetBlock() != nil
+	interval, err := backupIntervalFrom(req.GetVolumeContext())
+	if err != nil {
+		return nil, err
+	}
 
 	if err := n.runOp(ctx, vol, func(octx context.Context) error {
-		return n.stage(octx, vol, epoch, block, staging)
+		return n.stage(octx, vol, epoch, block, staging, interval)
 	}); err != nil {
 		return nil, toStatus(err)
 	}
@@ -195,7 +208,7 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 }
 
 // stage makes the local LV match latest.json, restoring from S3 if needed.
-func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, staging string) error {
+func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, staging string, interval time.Duration) error {
 	defer n.locks.lock(vol)()
 
 	o, oetag, err := manifest.LoadOwner(ctx, n.s, vol)
@@ -234,9 +247,16 @@ func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, s
 	}
 	st.Epoch, st.ETag, st.Fenced = epoch, etag, false
 	st.Staged, st.Block, st.Staging = true, block, staging
+	st.BackupInterval = ""
+	if interval > 0 {
+		st.BackupInterval = interval.String()
+	}
 	if err := n.states.save(st); err != nil {
 		return err
 	}
+	// The local LV now equals latest.json: the next periodic backup is due
+	// one interval from now.
+	n.markBackup(vol, n.now())
 
 	// Advertise the snapshot agent address for in-use snapshots.
 	if n.cfg.AgentAdvertise != "" && o.Address != n.cfg.AgentAdvertise {
@@ -344,6 +364,7 @@ func (n *Node) unstage(ctx context.Context, vol, staging string) error {
 	if st == nil || !st.Staged {
 		return nil
 	}
+	n.forgetBackup(vol)
 	st.Staged = false // no fsfreeze for the final backup: the fs is unmounted
 	if _, err := n.backupLocked(ctx, st); err != nil {
 		if !errors.Is(err, ErrFenced) {

@@ -110,6 +110,7 @@ func (c *fsCluster) createVolume(name string, src *csi.VolumeContentSource) stri
 	if err != nil {
 		c.t.Fatalf("CreateVolume: %v", err)
 	}
+	c.vctx[resp.Volume.VolumeId] = resp.Volume.VolumeContext
 	return resp.Volume.VolumeId
 }
 
@@ -133,6 +134,7 @@ func (c *fsCluster) attach(vol, node string) *fsMount {
 	}
 	stage := &csi.NodeStageVolumeRequest{
 		VolumeId: vol, StagingTargetPath: m.staging, VolumeCapability: c.cap, PublishContext: pub.PublishContext,
+		VolumeContext: c.vctx[vol],
 	}
 	if _, err := c.nodes[node].NodeStageVolume(ctx, stage); err != nil {
 		c.t.Fatalf("NodeStage %s on %s: %v", vol, node, err)

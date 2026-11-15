@@ -188,24 +188,69 @@ func (n *Node) SnapshotVolume(ctx context.Context, vol, snapID string) error {
 
 // ---------------------------------------------------------------- loops
 
+// orphanCleanupInterval is how often local LVs that can never be reused are removed.
+const orphanCleanupInterval = 5 * time.Minute
+
+// backupLoop wakes every MinBackupInterval (or the node default, if shorter)
+// and backs up each staged volume whose own interval has elapsed.
 func (n *Node) backupLoop(ctx context.Context) {
-	if n.cfg.BackupInterval <= 0 {
-		return
+	tick := MinBackupInterval
+	if d := n.cfg.BackupInterval; d > 0 && d < tick {
+		tick = d
 	}
-	t := time.NewTicker(n.cfg.BackupInterval)
+	t := time.NewTicker(tick)
 	defer t.Stop()
+	lastCleanup := n.now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		n.backupAll(ctx)
-		n.cleanupOrphans(ctx)
+		n.backupDue(ctx)
+		if n.now().Sub(lastCleanup) >= orphanCleanupInterval {
+			n.cleanupOrphans(ctx)
+			lastCleanup = n.now()
+		}
 	}
 }
 
-func (n *Node) backupAll(ctx context.Context) {
+// intervalFor is the volume's StorageClass interval, else the node default
+// (--backup-interval; 0 disables periodic backups for such volumes).
+func (n *Node) intervalFor(st *volState) time.Duration {
+	if st.BackupInterval != "" {
+		d, err := parseBackupInterval(st.BackupInterval)
+		if err == nil {
+			return d
+		}
+		klog.ErrorS(err, "bad backup interval in state, using node default", "volume", st.VolumeID)
+	}
+	return n.cfg.BackupInterval
+}
+
+func (n *Node) markBackup(vol string, t time.Time) {
+	n.schedMu.Lock()
+	defer n.schedMu.Unlock()
+	n.lastBackup[vol] = t
+}
+
+func (n *Node) forgetBackup(vol string) {
+	n.schedMu.Lock()
+	defer n.schedMu.Unlock()
+	delete(n.lastBackup, vol)
+}
+
+func (n *Node) backupDueAt(vol string, interval time.Duration, now time.Time) bool {
+	n.schedMu.Lock()
+	defer n.schedMu.Unlock()
+	last, ok := n.lastBackup[vol]
+	return !ok || now.Sub(last) >= interval
+}
+
+// backupDue backs up, one at a time, every staged volume whose interval has
+// elapsed since its last periodic backup started. A failed backup is retried
+// one interval later.
+func (n *Node) backupDue(ctx context.Context) {
 	vols, err := n.states.list()
 	if err != nil {
 		klog.ErrorS(err, "list states")
@@ -216,8 +261,14 @@ func (n *Node) backupAll(ctx context.Context) {
 		if err != nil || st == nil || !st.Staged || st.Fenced {
 			continue
 		}
+		interval := n.intervalFor(st)
+		now := n.now()
+		if interval <= 0 || !n.backupDueAt(vol, interval, now) {
+			continue
+		}
+		n.markBackup(vol, now)
 		if _, err := n.BackupVolume(ctx, vol); err != nil {
-			klog.ErrorS(err, "periodic backup failed", "volume", vol)
+			klog.ErrorS(err, "periodic backup failed", "volume", vol, "interval", interval)
 		}
 	}
 }

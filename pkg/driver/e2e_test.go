@@ -36,7 +36,8 @@ type cluster struct {
 	ctl   *Controller
 	nodes map[string]*Node
 	vgs   map[string]thinVG
-	fakes map[string]*fakeVG // nil entries for real LVM
+	fakes map[string]*fakeVG           // nil entries for real LVM
+	vctx  map[string]map[string]string // volume context from CreateVolume, as kept in the PV
 }
 
 // newCluster builds a controller and nodes backed by fake LVM and in-memory S3.
@@ -54,7 +55,7 @@ func newCluster(t *testing.T, nodeIDs ...string) *cluster {
 
 func newClusterWith(t *testing.T, s store.ObjectStore, mkVG func(node string) thinVG, nodeIDs ...string) *cluster {
 	t.Helper()
-	c := &cluster{t: t, s: s, nodes: map[string]*Node{}, vgs: map[string]thinVG{}, fakes: map[string]*fakeVG{}}
+	c := &cluster{t: t, s: s, nodes: map[string]*Node{}, vgs: map[string]thinVG{}, fakes: map[string]*fakeVG{}, vctx: map[string]map[string]string{}}
 	base := Config{Name: DefaultName, Store: c.s, ChunkSize: testChunk, Parallel: 4, GCGrace: time.Hour, AgentToken: "secret"}
 	c.ctl = NewController(base)
 	for _, id := range nodeIDs {
@@ -75,15 +76,23 @@ func newClusterWith(t *testing.T, s store.ObjectStore, mkVG func(node string) th
 
 func (c *cluster) createVolume(name string, src *csi.VolumeContentSource) *csi.Volume {
 	c.t.Helper()
+	return c.createVolumeWith(name, src, nil)
+}
+
+// createVolumeWith passes StorageClass parameters.
+func (c *cluster) createVolumeWith(name string, src *csi.VolumeContentSource, params map[string]string) *csi.Volume {
+	c.t.Helper()
 	resp, err := c.ctl.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
 		Name:                name,
 		CapacityRange:       &csi.CapacityRange{RequiredBytes: testSize},
 		VolumeCapabilities:  []*csi.VolumeCapability{blockCap},
 		VolumeContentSource: src,
+		Parameters:          params,
 	})
 	if err != nil {
 		c.t.Fatalf("CreateVolume: %v", err)
 	}
+	c.vctx[resp.Volume.VolumeId] = resp.Volume.VolumeContext
 	return resp.Volume
 }
 
@@ -99,7 +108,7 @@ func (c *cluster) attach(vol, node string) {
 	}
 	if _, err := c.nodes[node].NodeStageVolume(ctx, &csi.NodeStageVolumeRequest{
 		VolumeId: vol, StagingTargetPath: c.t.TempDir(), VolumeCapability: blockCap,
-		PublishContext: pub.PublishContext,
+		PublishContext: pub.PublishContext, VolumeContext: c.vctx[vol],
 	}); err != nil {
 		c.t.Fatalf("NodeStage %s on %s: %v", vol, node, err)
 	}

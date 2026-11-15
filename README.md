@@ -17,7 +17,7 @@ snapshots/<id>.json.gz       VolumeSnapshot 時点のマニフェスト（不変
 | CreateVolume | 全ゼロのマニフェストを作るだけ（データ転送なし）。スナップショット／クローン元からの作成もマニフェストのコピーのみ |
 | ControllerPublish | `owner.json` を新ノードに書き換えてエポックを +1。`latest.json` にもエポックを書き込み ETag を変えることで、旧ノードの条件付き書き込み（If-Match）を失敗させる（フェンシング） |
 | NodeStage | ローカル LV の世代が `latest.json` と一致すればそのまま使う。違えば thin LV を作り直して S3 から並列復元し、直後に基準スナップショットを取る |
-| 定期バックアップ | thin スナップショット → `thin_delta` で前回基準との差分ブロックを取得 → 該当チャンクだけ読み、S3 に無いハッシュだけ PUT → `latest.json` を If-Match で差し替え |
+| 定期バックアップ | ボリュームごとの間隔（後述）で、thin スナップショット → `thin_delta` で前回基準との差分ブロックを取得 → 該当チャンクだけ読み、S3 に無いハッシュだけ PUT → `latest.json` を If-Match で差し替え |
 | NodeUnstage | アンマウント後に最終バックアップ。LV は残す（同じノードに戻れば復元不要） |
 | ControllerUnpublish | 所有を解除してエポック +1（ノード障害時の強制デタッチでも旧ノードを締め出す） |
 | CreateSnapshot | デタッチ中なら `latest.json` のコピー。使用中なら所有ノードのエージェントに依頼し、その時点の差分を上げてからマニフェストを固定 |
@@ -29,7 +29,28 @@ snapshots/<id>.json.gz       VolumeSnapshot 時点のマニフェスト（不変
 整合性について:
 - Filesystem モードはスナップショット前に `fsfreeze` するので、ファイルシステムとして整合した状態になります
 - Block モードはクラッシュ整合（電源断と同等）です
-- **ノードが突然死んだ場合**は、最後のバックアップ以降の書き込みが失われます（RPO = `--backup-interval`）
+- **ノードが突然死んだ場合**は、最後のバックアップ以降の書き込みが失われます（RPO = そのボリュームのバックアップ間隔）
+
+### バックアップ間隔
+
+定期バックアップの間隔は StorageClass の `parameters.backupInterval` でボリュームごとに指定できます（Go の duration 形式、10 秒以上）。
+指定が無いボリュームはノードの `--backup-interval`（既定 5m、`0` で定期バックアップなし）に従います。
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: hermit-1m
+provisioner: hermit.csi.tsuzu.dev
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  backupInterval: 1m
+```
+
+- 値は CreateVolume 時に PV の volume context に記録され、NodeStage のたびにノードへ渡されます。PV は不変なので、StorageClass を後から変えても既存のボリュームには反映されません
+- ノードは 10 秒ごとに起き、前回の定期バックアップ開始から間隔が経ったボリュームだけを順番にバックアップします。失敗したら次の間隔で再試行します
+- NodeStage の直後は S3 と一致しているので、最初の定期バックアップはそこから 1 間隔後です。ノードプラグインが再起動したときは、最初の周回ですべてのボリュームをバックアップします
+- バックアップは 1 つずつ順番に行うので、ボリュームが多く差分が大きいと、実際の間隔は指定より伸びることがあります
 
 ## ディレクトリ
 

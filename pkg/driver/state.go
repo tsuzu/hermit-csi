@@ -20,6 +20,8 @@ type volState struct {
 	Fenced     bool   `json:"fenced"` // another owner took over; never write again
 	Block      bool   `json:"block"`
 	Staging    string `json:"staging,omitempty"`
+	// BackupInterval overrides the node default (from the volume context).
+	BackupInterval string `json:"backupInterval,omitempty"`
 }
 
 type stateStore struct{ dir string }
