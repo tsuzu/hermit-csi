@@ -18,10 +18,10 @@ import (
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
 
-	"github.com/example/s3lvm-csi/pkg/backup"
-	"github.com/example/s3lvm-csi/pkg/lvm"
-	"github.com/example/s3lvm-csi/pkg/manifest"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
+	"github.com/tsuzu/s3lvm-csi/pkg/manifest"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 // ErrFenced means another node now owns the volume; this node must not write.

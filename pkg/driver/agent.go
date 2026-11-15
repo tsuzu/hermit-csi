@@ -12,10 +12,10 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/example/s3lvm-csi/pkg/backup"
-	"github.com/example/s3lvm-csi/pkg/lvm"
-	"github.com/example/s3lvm-csi/pkg/manifest"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
+	"github.com/tsuzu/s3lvm-csi/pkg/manifest"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 const agentSnapshotPath = "/v1/snapshot"

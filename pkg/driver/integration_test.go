@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/s3lvm-csi/pkg/lvm"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 func itEnv(t *testing.T, k string) string {

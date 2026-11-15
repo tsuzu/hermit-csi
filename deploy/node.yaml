@@ -19,7 +19,7 @@ spec:
         s3lvm.csi.example.com/enabled: "true"
       containers:
         - name: driver
-          image: ghcr.io/example/s3lvm-csi:latest
+          image: ghcr.io/tsuzu/s3lvm-csi:latest
           securityContext:
             privileged: true
           args:

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/example/s3lvm-csi/pkg/backup"
-	"github.com/example/s3lvm-csi/pkg/lvm"
+	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
 )
 
 // fakeVG emulates an LVM thin pool with sparse files. Snapshots are full

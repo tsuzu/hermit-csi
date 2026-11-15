@@ -18,8 +18,8 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
-	"github.com/example/s3lvm-csi/pkg/lvm"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 const (

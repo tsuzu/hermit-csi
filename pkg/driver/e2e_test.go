@@ -15,9 +15,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/example/s3lvm-csi/pkg/backup"
-	"github.com/example/s3lvm-csi/pkg/manifest"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/s3lvm-csi/pkg/manifest"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 const (

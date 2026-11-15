@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/example/s3lvm-csi/pkg/manifest"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/manifest"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 // Range is a byte range [Off, Off+Len).

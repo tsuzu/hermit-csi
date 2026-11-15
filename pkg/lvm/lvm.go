@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/example/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/s3lvm-csi/pkg/backup"
 )
 
 const (

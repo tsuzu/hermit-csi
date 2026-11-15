@@ -16,7 +16,7 @@ spec:
       priorityClassName: system-cluster-critical
       containers:
         - name: driver
-          image: ghcr.io/example/s3lvm-csi:latest
+          image: ghcr.io/tsuzu/s3lvm-csi:latest
           args:
             - --mode=controller
             - --endpoint=unix:///csi/csi.sock

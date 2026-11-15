@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/s3lvm-csi/pkg/backup"
 )
 
 // data_block_size is in 512-byte sectors: 128 sectors = 64 KiB.

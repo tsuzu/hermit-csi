@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 // Manifest maps every chunk index of a volume to the hash of its content.

@@ -13,9 +13,9 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/example/s3lvm-csi/pkg/driver"
-	"github.com/example/s3lvm-csi/pkg/lvm"
-	"github.com/example/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/s3lvm-csi/pkg/driver"
+	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
+	"github.com/tsuzu/s3lvm-csi/pkg/store"
 )
 
 var version = "dev"
