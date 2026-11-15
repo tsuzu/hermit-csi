@@ -60,7 +60,6 @@ jobs:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_REGION: us-east-1
-      MINIO_REF: RELEASE.2025-10-15T17-29-55Z
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -68,31 +67,9 @@ jobs:
           go-version-file: go.mod
       - name: Install LVM tools
         run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools xfsprogs e2fsprogs
-      # Open-source MinIO is archived: Docker Hub / quay.io images and dl.min.io
-      # binaries are no longer published, so build the last release from source.
-      - name: Cache MinIO binary
-        id: minio-cache
-        uses: actions/cache@v4
+      - uses: ./.github/actions/minio
         with:
-          path: ~/minio-bin
-          key: minio-${{ env.MINIO_REF }}-${{ runner.os }}
-      - name: Build MinIO
-        if: steps.minio-cache.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch "$MINIO_REF" https://github.com/minio/minio.git "$RUNNER_TEMP/minio-src"
-          cd "$RUNNER_TEMP/minio-src"
-          CGO_ENABLED=0 go build -trimpath -o ~/minio-bin/minio .
-      - name: Start MinIO
-        run: |
-          mkdir -p "$RUNNER_TEMP/minio-data"
-          MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
-            nohup ~/minio-bin/minio server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 \
-            > "$RUNNER_TEMP/minio.log" 2>&1 &
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:9000/minio/health/ready && break
-            sleep 1
-          done
-          aws --endpoint-url $HERMIT_IT_S3_ENDPOINT s3 mb s3://$HERMIT_IT_BUCKET
+          bucket: ${{ env.HERMIT_IT_BUCKET }}
       - name: Create thin pools on loop devices
         run: sudo -E hack/it-setup.sh up
       - name: Build test binary
@@ -109,6 +86,62 @@ jobs:
         if: always()
         run: sudo -E hack/it-setup.sh down
 
+  e2e:
+    name: e2e (kind, released manifests)
+    runs-on: ubuntu-24.04
+    needs: [unit, scheduler]
+    env:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      KIND_VERSION: v0.33.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install LVM tools and kind
+        run: |
+          sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools
+          curl -fsSLo "$RUNNER_TEMP/kind" "https://kind.sigs.k8s.io/dl/$KIND_VERSION/kind-linux-amd64"
+          sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
+          kind version && kubectl version --client
+      # Pods reach it through the kind network's gateway.
+      - uses: ./.github/actions/minio
+        with:
+          address: 0.0.0.0:9000
+          bucket: hermit-e2e
+      - uses: docker/setup-buildx-action@v3
+      - name: Build driver image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ghcr.io/tsuzu/hermit-csi:e2e
+          cache-from: type=gha,scope=driver
+          cache-to: type=gha,scope=driver,mode=max
+      - name: Build scheduler image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scheduler/Dockerfile
+          load: true
+          tags: ghcr.io/tsuzu/hermit-scheduler:e2e
+          cache-from: type=gha,scope=scheduler
+          cache-to: type=gha,scope=scheduler,mode=max
+      - name: Create cluster and deploy
+        run: test/e2e/run.sh up
+      - name: Run e2e tests
+        run: test/e2e/run.sh test
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          test/e2e/run.sh dump || true
+          tail -50 "$RUNNER_TEMP/minio.log" || true
+      - name: Tear down
+        if: always()
+        run: test/e2e/run.sh down
+
   image:
     name: container image
     runs-on: ubuntu-24.04
@@ -121,9 +154,11 @@ jobs:
           context: .
           push: false
           tags: hermit-csi:ci
+          cache-from: type=gha,scope=driver
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: scheduler/Dockerfile
           push: false
           tags: hermit-scheduler:ci
+          cache-from: type=gha,scope=scheduler

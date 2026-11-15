@@ -1,0 +1,10 @@
+# Two hermit nodes. Their VGs are prepared on the host by run.sh before the
+# cluster starts (node containers only see block devices that exist then).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+    labels: {hermit.csi.tsuzu.dev/enabled: "true"}
+  - role: worker
+    labels: {hermit.csi.tsuzu.dev/enabled: "true"}

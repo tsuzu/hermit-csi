@@ -1,0 +1,47 @@
+name: Start MinIO
+description: >-
+  Build (cached) and start MinIO on the runner and create a bucket.
+  Open-source MinIO is archived: Docker Hub / quay.io images and dl.min.io
+  binaries are no longer published, so the last release is built from source.
+  Requires Go (actions/setup-go) and AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+inputs:
+  address:
+    description: listen address
+    default: 127.0.0.1:9000
+  bucket:
+    description: bucket to create
+    required: true
+  ref:
+    description: MinIO release tag
+    default: RELEASE.2025-10-15T17-29-55Z
+runs:
+  using: composite
+  steps:
+    - name: Cache MinIO binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/minio-bin
+        key: minio-${{ inputs.ref }}-${{ runner.os }}
+    - name: Build MinIO
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env: {MINIO_REF: "${{ inputs.ref }}"}
+      run: |
+        git clone --depth 1 --branch "$MINIO_REF" https://github.com/minio/minio.git "$RUNNER_TEMP/minio-src"
+        cd "$RUNNER_TEMP/minio-src"
+        CGO_ENABLED=0 go build -trimpath -o ~/minio-bin/minio .
+    - name: Start MinIO
+      shell: bash
+      env: {ADDR: "${{ inputs.address }}", BUCKET: "${{ inputs.bucket }}"}
+      run: |
+        mkdir -p "$RUNNER_TEMP/minio-data"
+        MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
+          nohup ~/minio-bin/minio server "$RUNNER_TEMP/minio-data" --address "$ADDR" \
+          > "$RUNNER_TEMP/minio.log" 2>&1 &
+        port=${ADDR##*:}
+        for i in $(seq 1 30); do
+          curl -sf "http://127.0.0.1:$port/minio/health/ready" && break
+          sleep 1
+        done
+        aws --endpoint-url "http://127.0.0.1:$port" s3 mb "s3://$BUCKET"

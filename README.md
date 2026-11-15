@@ -122,6 +122,8 @@ CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブ
 - **unit**: gofmt / vet / `-race` テスト / カバレッジ
 - **integration**: loop デバイス上の 2 つの thin pool と MinIO を使った結合テスト
 - **scheduler**: スケジューラプラグインの vet / テスト（実際の kube-scheduler を fake API サーバーで動かし、Pod の配置先を検証）
+- **e2e**: kind クラスタ（ワーカー 2 台、loop デバイス上の thin pool）に deploy/ と deploy/scheduler/ を入れ、実際の kubelet・CSI サイドカー・snapshot-controller・hermit-scheduler で動かす（`test/e2e/run.sh`）。
+  Filesystem / Block ボリュームのノード間移動と復元、別ノードの方がリソース的に有利な状況でもローカルコピーのあるノードに戻ること、使用中スナップショットからの復元、削除を確認します
 - **image**: コンテナイメージ（ドライバとスケジューラ）のビルド
 
 ## デプロイ
@@ -132,7 +134,7 @@ CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブ
    lvcreate -l 95%FREE --chunksize 64k -T hermit/pool
    ```
 2. スナップショットを使う場合は、snapshot CRD と snapshot-controller を入れておきます。
-3. `deploy/secret.yaml` を編集して `kubectl apply -k deploy/` を実行します。
+3. `deploy/secret.yaml`（S3 設定と認証情報の ConfigMap / Secret）を編集して `kubectl apply -f deploy/secret.yaml` を、続けて `kubectl apply -k deploy/` を実行します。
 4. 動作例は `examples/block-pvc.yaml` にあります。
 
 ## 既知の制約 / TODO

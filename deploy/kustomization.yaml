@@ -1,8 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  # The hermit-csi ConfigMap and Secret are not included: edit and apply
+  # secret.yaml (or create your own) first.
   - csidriver.yaml
-  - secret.yaml
   - rbac.yaml
   - controller.yaml
   - node.yaml

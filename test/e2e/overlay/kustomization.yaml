@@ -1,0 +1,22 @@
+# deploy/ + deploy/scheduler/ as released, with the changes kind needs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../deploy
+  - ../../../deploy/scheduler
+  # ConfigMap + Secret for the MinIO on the host (written by run.sh).
+  - s3.yaml
+images:
+  - {name: ghcr.io/tsuzu/hermit-csi, newTag: e2e}
+  - {name: ghcr.io/tsuzu/hermit-scheduler, newTag: e2e}
+patches:
+  # All kind nodes share the host's block devices, so each node gets its own
+  # VG named after the node instead of the shared name "hermit".
+  - target: {kind: DaemonSet, name: hermit-csi-node}
+    patch: |-
+      - {op: test, path: /spec/template/spec/containers/0/args/3, value: --vg=hermit}
+      - {op: replace, path: /spec/template/spec/containers/0/args/3, value: --vg=$(NODE_NAME)}
+  # One scheduler replica is enough here.
+  - target: {kind: Deployment, name: hermit-scheduler}
+    patch: |-
+      - {op: replace, path: /spec/replicas, value: 1}
