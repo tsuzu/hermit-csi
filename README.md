@@ -62,10 +62,7 @@ parameters:
 - Score は、Pod の hermit ボリュームの容量のうち、そのノードにコピーがある割合 × 100 です。フィルタはしないので、そのノードに置けなければ普通に別ノードへ行きます（その場合は復元）
 - 未バインド（WaitForFirstConsumer の新規ボリューム）、他ドライバのボリューム、所有情報が無い・読めない場合は何も優先しません。S3 の読み取りは 1 サイクルあたり既定 2 秒で打ち切ります
 
-```sh
-docker build -f scheduler/Dockerfile -t ghcr.io/tsuzu/hermit-scheduler:latest .
-kubectl apply -k deploy/scheduler/     # deploy/ の ConfigMap / Secret（S3 設定と認証情報）を共有します
-```
+リリースの `hermit-scheduler.yaml`（または `kubectl apply -k deploy/scheduler/`）で入ります。S3 の設定と認証情報はドライバの ConfigMap / Secret `hermit-csi` を共有します。
 
 使う Pod は `spec.schedulerName: hermit-scheduler` を指定します（StatefulSet なら Pod テンプレートに）。
 既定のスケジューラはそのまま動き続けます。プラグインの重み（既定 10）は `deploy/scheduler/config.yaml` で調整できます。
@@ -129,13 +126,32 @@ CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブ
 ## デプロイ
 
 1. 対象ノードに VG `hermit` と thin pool `pool` を作り、ラベル `hermit.csi.tsuzu.dev/enabled=true` を付けます。
+   コンテナからは modprobe できないので、カーネルモジュール `dm_thin_pool` と `dm_snapshot` もノードで読み込んでおきます（足りないとノードプラグインが起動時にエラーで止まります）。
    ```sh
    vgcreate hermit /dev/nvme1n1
    lvcreate -l 95%FREE --chunksize 64k -T hermit/pool
+   printf 'dm_thin_pool\ndm_snapshot\n' > /etc/modules-load.d/hermit.conf && systemctl restart systemd-modules-load
    ```
 2. スナップショットを使う場合は、snapshot CRD と snapshot-controller を入れておきます。
-3. `deploy/secret.yaml`（S3 設定と認証情報の ConfigMap / Secret）を編集して `kubectl apply -f deploy/secret.yaml` を、続けて `kubectl apply -k deploy/` を実行します。
+3. S3 の設定と認証情報（ConfigMap / Secret `hermit-csi`）を編集して適用し、ドライバを入れます。
+   リリースのマニフェストは、そのリリースのイメージに `tag@digest` で固定されています。
+   ```sh
+   V=v0.1.0   # https://github.com/tsuzu/hermit-csi/releases
+   curl -fsSLO https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi-config.yaml
+   $EDITOR hermit-csi-config.yaml && kubectl apply -f hermit-csi-config.yaml
+   kubectl apply -f https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi.yaml
+   # 任意: ローカルコピーのあるノードを優先するスケジューラ（後述）
+   kubectl apply -f https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-scheduler.yaml
+   ```
+   リポジトリから入れる場合は `kubectl apply -f deploy/secret.yaml`（編集後）、`kubectl apply -k deploy/`、`kubectl apply -k deploy/scheduler/` です（イメージは `latest`）。
 4. 動作例は `examples/block-pvc.yaml` にあります。
+
+イメージは `ghcr.io/tsuzu/hermit-csi` と `ghcr.io/tsuzu/hermit-scheduler`（linux/amd64、linux/arm64）です。
+
+### リリース手順
+
+`main` の CI が green のコミットに `vX.Y.Z` タグを push すると、`.github/workflows/release.yaml` が両イメージを
+`X.Y.Z` / `X.Y` / `latest` で ghcr に push し、イメージを固定したマニフェスト（`hermit-csi.yaml`、`hermit-scheduler.yaml`、`hermit-csi-config.yaml`）を付けた GitHub Release を作ります。
 
 ## 既知の制約 / TODO
 

@@ -9,6 +9,7 @@ IMG_DIR=${IMG_DIR:-/var/tmp/hermit-it}
 
 up() {
   modprobe dm_thin_pool
+  modprobe dm_snapshot
   mkdir -p "$IMG_DIR"
   for vg in "${VGS[@]}"; do
     img="$IMG_DIR/$vg.img"

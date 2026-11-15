@@ -97,3 +97,23 @@ func TestCommandTimeout(t *testing.T) {
 		t.Fatal("timeout not applied")
 	}
 }
+
+func TestCheckTargets(t *testing.T) {
+	targets := func(out string) *VG {
+		return &VG{Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			return []byte(out), nil
+		}}
+	}
+	all := "thin-pool        v1.23.0\nthin             v1.23.0\nsnapshot         v1.16.0\nstriped          v1.7.0\n"
+	if err := targets(all).CheckTargets(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	err := targets("thin-pool v1.23.0\nthin v1.23.0\nlinear v1.5.0\n").CheckTargets(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "[snapshot]") || !strings.Contains(err.Error(), "dm_snapshot") {
+		t.Fatalf("missing snapshot: %v", err)
+	}
+	err = targets("linear v1.5.0\n").CheckTargets(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "[dm_thin_pool dm_snapshot]") {
+		t.Fatalf("missing all: %v", err)
+	}
+}

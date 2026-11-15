@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,6 +91,44 @@ func dmName(parts ...string) string {
 func (v *VG) tpoolDM() string { return dmName(v.Name, v.Pool) + "-tpool" }
 func (v *VG) tmetaDev() string {
 	return "/dev/mapper/" + dmName(v.Name, v.Pool+"_tmeta")
+}
+
+// RequiredTargets are the device-mapper targets the driver uses, with the
+// kernel module providing each. LVM loads missing ones with modprobe, which a
+// container usually cannot do, so the node must load them beforehand.
+var RequiredTargets = map[string]string{
+	"thin-pool": "dm_thin_pool",
+	"thin":      "dm_thin_pool",
+	"snapshot":  "dm_snapshot", // lvcreate checks for it even for thin snapshots
+}
+
+// CheckTargets returns an error naming the kernel modules to load if any
+// required device-mapper target is missing.
+func (v *VG) CheckTargets(ctx context.Context) error {
+	out, err := v.run(ctx, "dmsetup", "targets")
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(line); len(f) > 0 {
+			have[f[0]] = true
+		}
+	}
+	var missing, mods []string
+	for _, t := range []string{"thin-pool", "thin", "snapshot"} {
+		if !have[t] {
+			missing = append(missing, t)
+			if m := RequiredTargets[t]; !slices.Contains(mods, m) {
+				mods = append(mods, m)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("device-mapper targets %v are not available: load the kernel modules %v on the node (e.g. modprobe, or /etc/modules-load.d)",
+			missing, mods)
+	}
+	return nil
 }
 
 // CreateThin creates a thin LV of the given size (bytes, must be a multiple of 512).

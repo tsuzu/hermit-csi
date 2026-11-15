@@ -180,6 +180,11 @@ func RunNode(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if cfg.VG != nil {
+		if err := cfg.VG.CheckTargets(ctx); err != nil {
+			return err
+		}
+	}
 	go n.backupLoop(ctx)
 	go func() {
 		if err := n.serveAgent(ctx); err != nil {

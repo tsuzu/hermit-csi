@@ -30,7 +30,9 @@ fail() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
 
 up() {
   log "host: thin pools on loop devices (one VG per kind worker, named after it)"
+  # Containers cannot modprobe: load every device-mapper target the driver uses.
   sudo modprobe dm_thin_pool
+  sudo modprobe dm_snapshot
   sudo modprobe loop
   # kind nodes only see device nodes that exist when they start, and kubelet
   # needs free loop devices for Block volumes: create spare nodes up front.
@@ -93,8 +95,8 @@ driver_pod() {
   "${K[@]}" -n kube-system get pod -l app=hermit-csi-node --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}'
 }
 
-# preflight: create and remove a thin LV from inside each node plugin, the
-# way the driver does. If it hangs, show where (wchan, kernel stack, LVM's
+# preflight: create a thin LV and a thin snapshot of it from inside each node
+# plugin, the way the driver does, then remove them. If it hangs, show where (wchan, kernel stack, LVM's
 # own debug log) instead of timing out a pod much later.
 preflight() {
   log "preflight: thin LV inside each node plugin"
@@ -121,8 +123,11 @@ if kill -0 $pid 2>/dev/null; then
   exit 1
 fi
 if ! wait $pid; then tail -60 /tmp/preflight.log; exit 1; fi
+timeout 60 lvcreate -y -s -n e2e-preflight-snap "$vg/e2e-preflight"
+timeout 60 lvchange -ay -K "$vg/e2e-preflight-snap"
+test -b "/dev/$vg/e2e-preflight-snap"
 lvs "$vg"
-lvremove -y "$vg/e2e-preflight"
+lvremove -y "$vg/e2e-preflight-snap" "$vg/e2e-preflight"
 ' _ "$n" || fail "LVM preflight failed on $n"
   done
 }
