@@ -61,7 +61,10 @@ E2E テストは CSI の RPC を実際の順序で呼び、次の内容を検証
 結合テスト（root、実 LVM、MinIO）:
 
 ```sh
-docker run -d -p 9000:9000 minio/minio server /data
+# OSS 版 MinIO はアーカイブ済みで、イメージもバイナリも配布されていないため、最終リリースをソースからビルドする
+git clone --depth 1 --branch RELEASE.2025-10-15T17-29-55Z https://github.com/minio/minio.git /tmp/minio-src
+(cd /tmp/minio-src && CGO_ENABLED=0 go build -o /tmp/minio .)
+MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin /tmp/minio server /tmp/minio-data --address 127.0.0.1:9000 &
 aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://hermit-it
 sudo hack/it-setup.sh up
 export HERMIT_IT_VG_A=it-a HERMIT_IT_VG_B=it-b HERMIT_IT_S3_ENDPOINT=http://127.0.0.1:9000 \

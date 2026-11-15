@@ -41,6 +41,7 @@ jobs:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_REGION: us-east-1
+      MINIO_REF: RELEASE.2025-10-15T17-29-55Z
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -48,11 +49,26 @@ jobs:
           go-version-file: go.mod
       - name: Install LVM tools
         run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools
+      # Open-source MinIO is archived: Docker Hub / quay.io images and dl.min.io
+      # binaries are no longer published, so build the last release from source.
+      - name: Cache MinIO binary
+        id: minio-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/minio-bin
+          key: minio-${{ env.MINIO_REF }}-${{ runner.os }}
+      - name: Build MinIO
+        if: steps.minio-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$MINIO_REF" https://github.com/minio/minio.git "$RUNNER_TEMP/minio-src"
+          cd "$RUNNER_TEMP/minio-src"
+          CGO_ENABLED=0 go build -trimpath -o ~/minio-bin/minio .
       - name: Start MinIO
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID -e MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
-            minio/minio:latest server /data
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
+            nohup ~/minio-bin/minio server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 \
+            > "$RUNNER_TEMP/minio.log" 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:9000/minio/health/ready && break
             sleep 1
@@ -69,7 +85,7 @@ jobs:
         run: |
           sudo lvs -a -o+thin_id,lv_tags || true
           sudo dmsetup ls || true
-          docker logs minio | tail -50 || true
+          tail -50 "$RUNNER_TEMP/minio.log" || true
       - name: Tear down
         if: always()
         run: sudo -E hack/it-setup.sh down
