@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: lint + unit/e2e (fake LVM, in-memory S3)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install thin-provisioning-tools (for TestRealThinTools)
+        run: sudo apt-get update && sudo apt-get install -y thin-provisioning-tools
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet
+        run: go vet ./... && go vet -tags integration ./...
+      - name: Test
+        run: go test -race -count=1 -coverprofile=cover.out ./...
+      - name: Coverage
+        run: go tool cover -func=cover.out | tail -1
+
+  integration:
+    name: integration (real LVM thin pools + MinIO)
+    runs-on: ubuntu-24.04
+    needs: unit
+    env:
+      S3LVM_IT_VG_A: it-a
+      S3LVM_IT_VG_B: it-b
+      S3LVM_IT_POOL: pool
+      S3LVM_IT_S3_ENDPOINT: http://127.0.0.1:9000
+      S3LVM_IT_BUCKET: s3lvm-it
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install LVM tools
+        run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID -e MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/ready && break
+            sleep 1
+          done
+          aws --endpoint-url $S3LVM_IT_S3_ENDPOINT s3 mb s3://$S3LVM_IT_BUCKET
+      - name: Create thin pools on loop devices
+        run: sudo -E hack/it-setup.sh up
+      - name: Build test binary
+        run: go test -c -tags integration -o driver.test ./pkg/driver/
+      - name: Run integration tests (root)
+        run: sudo -E ./driver.test -test.run 'Integration' -test.v -test.count=1 -test.timeout=15m
+      - name: Debug on failure
+        if: failure()
+        run: |
+          sudo lvs -a -o+thin_id,lv_tags || true
+          sudo dmsetup ls || true
+          docker logs minio | tail -50 || true
+      - name: Tear down
+        if: always()
+        run: sudo -E hack/it-setup.sh down
+
+  image:
+    name: container image
+    runs-on: ubuntu-24.04
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: s3lvm-csi:ci

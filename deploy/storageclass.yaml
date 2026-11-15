@@ -1,0 +1,16 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: s3lvm
+provisioner: s3lvm.csi.example.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+---
+# Requires the snapshot CRDs and snapshot-controller (kubernetes-csi/external-snapshotter).
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: s3lvm
+driver: s3lvm.csi.example.com
+deletionPolicy: Delete
