@@ -1,4 +1,4 @@
-// Command s3lvm-csi is a CSI driver that keeps volumes on local LVM thin
+// Command hermit-csi is a CSI driver that keeps volumes on local LVM thin
 // volumes, continuously backs them up to S3 (incrementally, via thin_delta),
 // and restores them automatically when a volume is staged on another node.
 package main
@@ -13,9 +13,9 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/driver"
-	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
-	"github.com/tsuzu/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/hermit-csi/pkg/driver"
+	"github.com/tsuzu/hermit-csi/pkg/lvm"
+	"github.com/tsuzu/hermit-csi/pkg/store"
 )
 
 var version = "dev"
@@ -36,9 +36,9 @@ func main() {
 		parallel   = flag.Int("parallel", 8, "concurrent chunk transfers")
 		gcInterval = flag.Duration("gc-interval", time.Hour, "chunk GC interval (controller)")
 		gcGrace    = flag.Duration("gc-grace", 24*time.Hour, "minimum age before an unreferenced chunk is deleted")
-		vgName     = flag.String("vg", "s3lvm", "LVM volume group (node)")
+		vgName     = flag.String("vg", "hermit", "LVM volume group (node)")
 		pool       = flag.String("thin-pool", "pool", "LVM thin pool in the VG (node)")
-		stateDir   = flag.String("state-dir", "/var/lib/s3lvm", "local state directory (node)")
+		stateDir   = flag.String("state-dir", "/var/lib/hermit", "local state directory (node)")
 		interval   = flag.Duration("backup-interval", 5*time.Minute, "periodic backup interval (node)")
 		agentAddr  = flag.String("agent-listen", ":9810", "snapshot agent listen address (node)")
 		advertise  = flag.String("agent-advertise", "", "snapshot agent address the controller should use, host:port (node)")
@@ -70,7 +70,7 @@ func main() {
 		Parallel:       *parallel,
 		GCGrace:        *gcGrace,
 		GCInterval:     *gcInterval,
-		AgentToken:     os.Getenv("S3LVM_AGENT_TOKEN"),
+		AgentToken:     os.Getenv("HERMIT_AGENT_TOKEN"),
 		NodeID:         *nodeID,
 		VG:             &lvm.VG{Name: *vgName, Pool: *pool},
 		StateDir:       *stateDir,

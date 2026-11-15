@@ -1,34 +1,34 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: s3lvm-csi-node
+  name: hermit-csi-node
   namespace: kube-system
 spec:
   selector:
-    matchLabels: {app: s3lvm-csi-node}
+    matchLabels: {app: hermit-csi-node}
   template:
     metadata:
-      labels: {app: s3lvm-csi-node}
+      labels: {app: hermit-csi-node}
     spec:
-      serviceAccountName: s3lvm-csi-node
+      serviceAccountName: hermit-csi-node
       priorityClassName: system-node-critical
       # Give the final backup in NodeUnstage time to finish on shutdown.
       terminationGracePeriodSeconds: 600
       # Only nodes that have the VG/thin pool prepared.
       nodeSelector:
-        s3lvm.csi.example.com/enabled: "true"
+        hermit.csi.tsuzu.dev/enabled: "true"
       containers:
         - name: driver
-          image: ghcr.io/tsuzu/s3lvm-csi:latest
+          image: ghcr.io/tsuzu/hermit-csi:latest
           securityContext:
             privileged: true
           args:
             - --mode=node
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(NODE_NAME)
-            - --vg=s3lvm
+            - --vg=hermit
             - --thin-pool=pool
-            - --state-dir=/var/lib/s3lvm
+            - --state-dir=/var/lib/hermit
             - --backup-interval=5m
             - --agent-listen=:9810
             - --agent-advertise=$(POD_IP):9810
@@ -44,8 +44,8 @@ spec:
             - name: POD_IP
               valueFrom: {fieldRef: {fieldPath: status.podIP}}
           envFrom:
-            - configMapRef: {name: s3lvm-csi}
-            - secretRef: {name: s3lvm-csi}
+            - configMapRef: {name: hermit-csi}
+            - secretRef: {name: hermit-csi}
           ports:
             - {name: agent, containerPort: 9810}
           volumeMounts:
@@ -53,18 +53,18 @@ spec:
             - {name: kubelet-dir, mountPath: /var/lib/kubelet, mountPropagation: Bidirectional}
             - {name: dev, mountPath: /dev}
             - {name: lvm-lock, mountPath: /run/lock/lvm}
-            - {name: state, mountPath: /var/lib/s3lvm}
+            - {name: state, mountPath: /var/lib/hermit}
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path=/var/lib/kubelet/plugins/s3lvm.csi.example.com/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/hermit.csi.tsuzu.dev/csi.sock
           volumeMounts:
             - {name: socket-dir, mountPath: /csi}
             - {name: registration-dir, mountPath: /registration}
       volumes:
         - name: socket-dir
-          hostPath: {path: /var/lib/kubelet/plugins/s3lvm.csi.example.com, type: DirectoryOrCreate}
+          hostPath: {path: /var/lib/kubelet/plugins/hermit.csi.tsuzu.dev, type: DirectoryOrCreate}
         - name: registration-dir
           hostPath: {path: /var/lib/kubelet/plugins_registry, type: Directory}
         - name: kubelet-dir
@@ -74,4 +74,4 @@ spec:
         - name: lvm-lock
           hostPath: {path: /run/lock/lvm, type: DirectoryOrCreate}
         - name: state
-          hostPath: {path: /var/lib/s3lvm, type: DirectoryOrCreate}
+          hostPath: {path: /var/lib/hermit, type: DirectoryOrCreate}

@@ -1,4 +1,4 @@
-# s3lvm-csi
+# hermit-csi
 
 ローカルの LVM thin ボリュームを高速なローカルディスクとして使いつつ、S3 に**差分だけ**を継続バックアップし、
 別ノードでマウントされたときは S3 から自動で復元する CSI ドライバです。Block / Filesystem の両モードに対応しています。
@@ -34,7 +34,7 @@ snapshots/<id>.json.gz       VolumeSnapshot 時点のマニフェスト（不変
 ## ディレクトリ
 
 ```
-cmd/s3lvm-csi/     エントリポイント（--mode=controller|node）
+cmd/hermit-csi/     エントリポイント（--mode=controller|node）
 pkg/store/         S3 ラッパー（条件付き書き込み）とテスト用インメモリ実装
 pkg/manifest/      S3 上のレイアウトとマニフェスト
 pkg/backup/        差分バックアップ／並列復元／GC（LVM 非依存）
@@ -62,10 +62,10 @@ E2E テストは CSI の RPC を実際の順序で呼び、次の内容を検証
 
 ```sh
 docker run -d -p 9000:9000 minio/minio server /data
-aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://s3lvm-it
+aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://hermit-it
 sudo hack/it-setup.sh up
-export S3LVM_IT_VG_A=it-a S3LVM_IT_VG_B=it-b S3LVM_IT_S3_ENDPOINT=http://127.0.0.1:9000 \
-       S3LVM_IT_BUCKET=s3lvm-it AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+export HERMIT_IT_VG_A=it-a HERMIT_IT_VG_B=it-b HERMIT_IT_S3_ENDPOINT=http://127.0.0.1:9000 \
+       HERMIT_IT_BUCKET=hermit-it AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
 go test -c -tags integration -o driver.test ./pkg/driver/ && sudo -E ./driver.test -test.run Integration -test.v
 sudo hack/it-setup.sh down
 ```
@@ -77,10 +77,10 @@ CI（`.github/workflows/ci.yaml`）は、push と PR のたびに次のジョブ
 
 ## デプロイ
 
-1. 対象ノードに VG `s3lvm` と thin pool `pool` を作り、ラベル `s3lvm.csi.example.com/enabled=true` を付けます。
+1. 対象ノードに VG `hermit` と thin pool `pool` を作り、ラベル `hermit.csi.tsuzu.dev/enabled=true` を付けます。
    ```sh
-   vgcreate s3lvm /dev/nvme1n1
-   lvcreate -l 95%FREE --chunksize 64k -T s3lvm/pool
+   vgcreate hermit /dev/nvme1n1
+   lvcreate -l 95%FREE --chunksize 64k -T hermit/pool
    ```
 2. スナップショットを使う場合は、snapshot CRD と snapshot-controller を入れておきます。
 3. `deploy/secret.yaml` を編集して `kubectl apply -k deploy/` を実行します。

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/manifest"
-	"github.com/tsuzu/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/hermit-csi/pkg/manifest"
+	"github.com/tsuzu/hermit-csi/pkg/store"
 )
 
 const cs = 64 << 10 // 64 KiB chunks for tests

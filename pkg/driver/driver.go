@@ -18,17 +18,17 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
-	"github.com/tsuzu/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/hermit-csi/pkg/lvm"
+	"github.com/tsuzu/hermit-csi/pkg/store"
 )
 
 const (
-	DefaultName = "s3lvm.csi.example.com"
+	DefaultName = "hermit.csi.tsuzu.dev"
 	mib         = int64(1) << 20
 	gib         = int64(1) << 30
 
 	// publishContextEpoch carries the ownership epoch from ControllerPublish to NodeStage.
-	publishContextEpoch = "s3lvm.csi.example.com/epoch"
+	publishContextEpoch = "hermit.csi.tsuzu.dev/epoch"
 )
 
 // Config is shared by both modes; fields irrelevant to a mode are ignored.

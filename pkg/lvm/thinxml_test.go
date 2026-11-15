@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/hermit-csi/pkg/backup"
 )
 
 // data_block_size is in 512-byte sectors: 128 sectors = 64 KiB.
@@ -82,15 +82,15 @@ func TestParseThinDump(t *testing.T) {
 }
 
 func TestParseLVs(t *testing.T) {
-	out := "  pool|||1073741824\n  pvc-1|s3lvm|1|16777216\n  pvc-1-b3|s3lvm,s3lvm-base|2|16777216\n  [pool_tmeta]|||4194304\n"
+	out := "  pool|||1073741824\n  pvc-1|hermit|1|16777216\n  pvc-1-b3|hermit,hermit-base|2|16777216\n  [pool_tmeta]|||4194304\n"
 	got, err := parseLVs([]byte(out))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []LV{
 		{Name: "pool", Size: 1073741824},
-		{Name: "pvc-1", Tags: []string{"s3lvm"}, ThinID: 1, Size: 16777216},
-		{Name: "pvc-1-b3", Tags: []string{"s3lvm", "s3lvm-base"}, ThinID: 2, Size: 16777216},
+		{Name: "pvc-1", Tags: []string{"hermit"}, ThinID: 1, Size: 16777216},
+		{Name: "pvc-1-b3", Tags: []string{"hermit", "hermit-base"}, ThinID: 2, Size: 16777216},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)

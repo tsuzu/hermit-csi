@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: s3lvm-csi-controller
+  name: hermit-csi-controller
   namespace: kube-system
 spec:
   replicas: 1   # the driver's per-volume locks are in-process; keep a single replica
   strategy: {type: Recreate}
   selector:
-    matchLabels: {app: s3lvm-csi-controller}
+    matchLabels: {app: hermit-csi-controller}
   template:
     metadata:
-      labels: {app: s3lvm-csi-controller}
+      labels: {app: hermit-csi-controller}
     spec:
-      serviceAccountName: s3lvm-csi-controller
+      serviceAccountName: hermit-csi-controller
       priorityClassName: system-cluster-critical
       containers:
         - name: driver
-          image: ghcr.io/tsuzu/s3lvm-csi:latest
+          image: ghcr.io/tsuzu/hermit-csi:latest
           args:
             - --mode=controller
             - --endpoint=unix:///csi/csi.sock
@@ -28,8 +28,8 @@ spec:
             - --gc-interval=1h
             - --gc-grace=24h
           envFrom:
-            - configMapRef: {name: s3lvm-csi}
-            - secretRef: {name: s3lvm-csi}
+            - configMapRef: {name: hermit-csi}
+            - secretRef: {name: hermit-csi}
           volumeMounts:
             - {name: socket-dir, mountPath: /csi}
         - name: csi-provisioner

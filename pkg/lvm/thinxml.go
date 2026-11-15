@@ -7,7 +7,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/hermit-csi/pkg/backup"
 )
 
 const sectorSize = 512

@@ -1,8 +1,8 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: s3lvm
-provisioner: s3lvm.csi.example.com
+  name: hermit
+provisioner: hermit.csi.tsuzu.dev
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: false
@@ -11,6 +11,6 @@ allowVolumeExpansion: false
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
-  name: s3lvm
-driver: s3lvm.csi.example.com
+  name: hermit
+driver: hermit.csi.tsuzu.dev
 deletionPolicy: Delete

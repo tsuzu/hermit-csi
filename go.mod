@@ -1,4 +1,4 @@
-module github.com/tsuzu/s3lvm-csi
+module github.com/tsuzu/hermit-csi
 
 go 1.26.0
 

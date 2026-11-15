@@ -10,14 +10,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/hermit-csi/pkg/backup"
 )
 
 const (
 	// TagVolume marks LVs that hold a volume's live data.
-	TagVolume = "s3lvm"
+	TagVolume = "hermit"
 	// TagBase marks the thin snapshot that equals the last uploaded state.
-	TagBase = "s3lvm-base"
+	TagBase = "hermit-base"
 )
 
 // Runner executes a command; replaceable in tests.

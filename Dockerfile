@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/s3lvm-csi ./cmd/s3lvm-csi
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/hermit-csi ./cmd/hermit-csi
 
 FROM ubuntu:24.04
 RUN apt-get update \
@@ -14,5 +14,5 @@ RUN apt-get update \
 RUN sed -E -i 's/^(\s*)(#\s*)?(udev_sync|udev_rules|obtain_device_list_from_udev) = [01]$/\1\3 = 0/' /etc/lvm/lvm.conf \
  && test "$(lvmconfig --typeconfig full activation/udev_sync)" = "udev_sync=0" \
  && test "$(lvmconfig --typeconfig full activation/udev_rules)" = "udev_rules=0"
-COPY --from=build /out/s3lvm-csi /usr/local/bin/s3lvm-csi
-ENTRYPOINT ["/usr/local/bin/s3lvm-csi"]
+COPY --from=build /out/hermit-csi /usr/local/bin/hermit-csi
+ENTRYPOINT ["/usr/local/bin/hermit-csi"]

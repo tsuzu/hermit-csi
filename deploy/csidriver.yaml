@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
-  name: s3lvm.csi.example.com
+  name: hermit.csi.tsuzu.dev
 spec:
   # ControllerPublish/Unpublish is the ownership hand-over + fencing step.
   attachRequired: true

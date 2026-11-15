@@ -3,9 +3,9 @@
 # Usage: sudo hack/it-setup.sh [up|down]
 set -euo pipefail
 
-POOL=${S3LVM_IT_POOL:-pool}
-VGS=(${S3LVM_IT_VG_A:-it-a} ${S3LVM_IT_VG_B:-it-b})
-IMG_DIR=${IMG_DIR:-/var/tmp/s3lvm-it}
+POOL=${HERMIT_IT_POOL:-pool}
+VGS=(${HERMIT_IT_VG_A:-it-a} ${HERMIT_IT_VG_B:-it-b})
+IMG_DIR=${IMG_DIR:-/var/tmp/hermit-it}
 
 up() {
   modprobe dm_thin_pool

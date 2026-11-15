@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/backup"
+	"github.com/tsuzu/hermit-csi/pkg/backup"
 )
 
 // TestRealThinTools runs the real thin_delta / thin_dump binaries against

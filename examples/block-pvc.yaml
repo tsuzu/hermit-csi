@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: data
 spec:
-  storageClassName: s3lvm
+  storageClassName: hermit
   volumeMode: Block
   accessModes: [ReadWriteOnce]
   resources:
@@ -30,6 +30,6 @@ kind: VolumeSnapshot
 metadata:
   name: data-snap
 spec:
-  volumeSnapshotClassName: s3lvm
+  volumeSnapshotClassName: hermit
   source:
     persistentVolumeClaimName: data

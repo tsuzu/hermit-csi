@@ -15,9 +15,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/backup"
-	"github.com/tsuzu/s3lvm-csi/pkg/manifest"
-	"github.com/tsuzu/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/hermit-csi/pkg/backup"
+	"github.com/tsuzu/hermit-csi/pkg/manifest"
+	"github.com/tsuzu/hermit-csi/pkg/store"
 )
 
 const (

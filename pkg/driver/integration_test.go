@@ -5,10 +5,10 @@
 //
 // Required environment (see .github/workflows/ci.yaml and hack/it-setup.sh):
 //
-//	S3LVM_IT_VG_A, S3LVM_IT_VG_B   volume groups, each with a thin pool
-//	S3LVM_IT_POOL                  thin pool name (default "pool")
-//	S3LVM_IT_S3_ENDPOINT           e.g. http://127.0.0.1:9000
-//	S3LVM_IT_BUCKET                bucket name
+//	HERMIT_IT_VG_A, HERMIT_IT_VG_B   volume groups, each with a thin pool
+//	HERMIT_IT_POOL                  thin pool name (default "pool")
+//	HERMIT_IT_S3_ENDPOINT           e.g. http://127.0.0.1:9000
+//	HERMIT_IT_BUCKET                bucket name
 //	AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 //
 // Must run as root.
@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tsuzu/s3lvm-csi/pkg/lvm"
-	"github.com/tsuzu/s3lvm-csi/pkg/store"
+	"github.com/tsuzu/hermit-csi/pkg/lvm"
+	"github.com/tsuzu/hermit-csi/pkg/store"
 )
 
 func itEnv(t *testing.T, k string) string {
@@ -39,8 +39,8 @@ func itEnv(t *testing.T, k string) string {
 func realStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.New(context.Background(), store.Config{
-		Bucket:    itEnv(t, "S3LVM_IT_BUCKET"),
-		Endpoint:  itEnv(t, "S3LVM_IT_S3_ENDPOINT"),
+		Bucket:    itEnv(t, "HERMIT_IT_BUCKET"),
+		Endpoint:  itEnv(t, "HERMIT_IT_S3_ENDPOINT"),
 		Region:    "us-east-1",
 		PathStyle: true,
 		Prefix:    fmt.Sprintf("it/%s-%d", strings.ToLower(t.Name()), time.Now().UnixNano()),
@@ -56,13 +56,13 @@ func realCluster(t *testing.T) *cluster {
 	if os.Geteuid() != 0 {
 		t.Skip("integration tests need root")
 	}
-	pool := os.Getenv("S3LVM_IT_POOL")
+	pool := os.Getenv("HERMIT_IT_POOL")
 	if pool == "" {
 		pool = "pool"
 	}
 	vgNames := map[string]string{
-		"node-a": itEnv(t, "S3LVM_IT_VG_A"),
-		"node-b": itEnv(t, "S3LVM_IT_VG_B"),
+		"node-a": itEnv(t, "HERMIT_IT_VG_A"),
+		"node-b": itEnv(t, "HERMIT_IT_VG_B"),
 	}
 	s := realStore(t)
 	var vgs []*lvm.VG
