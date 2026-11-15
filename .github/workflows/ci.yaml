@@ -48,7 +48,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install LVM tools
-        run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools
+        run: sudo apt-get update && sudo apt-get install -y lvm2 thin-provisioning-tools xfsprogs e2fsprogs
       # Open-source MinIO is archived: Docker Hub / quay.io images and dl.min.io
       # binaries are no longer published, so build the last release from source.
       - name: Cache MinIO binary

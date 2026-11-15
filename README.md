@@ -60,6 +60,10 @@ E2E テストは CSI の RPC を実際の順序で呼び、次の内容を検証
 
 結合テスト（root、実 LVM、MinIO）:
 
+上の E2E シナリオを実 LVM で動かすほか、Filesystem モード（ext4 / xfs）を検証します。
+NodeStage でのフォーマットとマウント、復元後に再フォーマットせずマウントすること、マウント中バックアップの `fsfreeze`（fsync していない書き込みも含まれること）、
+フェンス後の旧ノードのアンマウント、使用中スナップショットからの作成、が対象です。`mkfs.ext4`、`mkfs.xfs`、`fsfreeze` が必要です。
+
 ```sh
 # OSS 版 MinIO はアーカイブ済みで、イメージもバイナリも配布されていないため、最終リリースをソースからビルドする
 git clone --depth 1 --branch RELEASE.2025-10-15T17-29-55Z https://github.com/minio/minio.git /tmp/minio-src
