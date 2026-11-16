@@ -140,7 +140,7 @@ CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 3. Edit and apply the S3 settings and credentials (ConfigMap / Secret `hermit-csi`), then install the driver.
    Release manifests pin that release's images by `tag@digest`.
    ```sh
-   V=v0.2.0   # https://github.com/tsuzu/hermit-csi/releases
+   V=v0.3.0   # https://github.com/tsuzu/hermit-csi/releases
    curl -fsSLO https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi-config.yaml
    $EDITOR hermit-csi-config.yaml && kubectl apply -f hermit-csi-config.yaml
    kubectl apply -f https://github.com/tsuzu/hermit-csi/releases/download/$V/hermit-csi.yaml
@@ -185,7 +185,7 @@ The controller, node plugin and scheduler read S3 with one of the following (rol
   ```yaml
   # kustomization.yaml
   resources:
-    - https://github.com/tsuzu/hermit-csi/releases/download/v0.2.0/hermit-csi.yaml
+    - https://github.com/tsuzu/hermit-csi/releases/download/v0.3.0/hermit-csi.yaml
   patches:
     - target: {kind: ServiceAccount, name: "hermit-csi-.*|hermit-scheduler"}
       patch: |-
@@ -201,9 +201,9 @@ The controller, node plugin and scheduler read S3 with one of the following (rol
   STS) in the ConfigMap.
   ```yaml
   resources:
-    - https://github.com/tsuzu/hermit-csi/releases/download/v0.2.0/hermit-csi.yaml
+    - https://github.com/tsuzu/hermit-csi/releases/download/v0.3.0/hermit-csi.yaml
   components:
-    - https://github.com/tsuzu/hermit-csi/deploy/components/web-identity?ref=v0.2.0
+    - https://github.com/tsuzu/hermit-csi/deploy/components/web-identity?ref=v0.3.0
   ```
 
 `S3_ROLE_ARN` without a token file assumes the role with whatever credentials the default chain finds (e.g. for a
@@ -222,12 +222,12 @@ as `X.Y.Z` / `X.Y` / `latest`, and create a GitHub release with manifests pinned
 
 ## Monitoring
 
-The controller and node plugin serve Prometheus metrics on `:9811/metrics` (`--metrics-listen`; container port `metrics`).
+Since v0.3.0, the controller and node plugin serve Prometheus metrics on `:9811/metrics` (`--metrics-listen`; container port `metrics`).
 With the Prometheus Operator, add the component `deploy/components/prometheus` for a PodMonitor and a PrometheusRule with the alerts below:
 
 ```yaml
 components:
-  - https://github.com/tsuzu/hermit-csi/deploy/components/prometheus?ref=<version>
+  - https://github.com/tsuzu/hermit-csi/deploy/components/prometheus?ref=v0.3.0
 ```
 
 **Are backups reaching S3?** The node plugin reports every volume staged on it (series disappear on unstage):
