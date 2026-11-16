@@ -149,7 +149,10 @@ func TestIntegrationStoreConditionalRace(t *testing.T) {
 	ctx := context.Background()
 	const writers, rounds = 16, 5
 
-	race := func(t *testing.T, key string, opts store.PutOpts) {
+	// Bodies must differ from every earlier write of the key: the ETag is the
+	// content's MD5, so a writer re-putting the current content leaves the
+	// ETag unchanged and a later If-Match on it rightly succeeds as well.
+	race := func(t *testing.T, key, phase string, opts store.PutOpts) {
 		t.Helper()
 		var wg sync.WaitGroup
 		start := make(chan struct{})
@@ -157,7 +160,7 @@ func TestIntegrationStoreConditionalRace(t *testing.T) {
 		for i := range writers {
 			wg.Go(func() {
 				<-start
-				_, errs[i] = s.Put(ctx, key, []byte(fmt.Sprintf("writer-%d", i)), opts)
+				_, errs[i] = s.Put(ctx, key, []byte(fmt.Sprintf("%s-%s-writer-%d", key, phase, i)), opts)
 			})
 		}
 		close(start)
@@ -178,12 +181,12 @@ func TestIntegrationStoreConditionalRace(t *testing.T) {
 
 	for r := range rounds {
 		key := fmt.Sprintf("race-%d", r)
-		race(t, key, store.PutOpts{IfNoneMatch: true})
+		race(t, key, "create", store.PutOpts{IfNoneMatch: true})
 		_, etag, err := s.Get(ctx, key)
 		if err != nil {
 			t.Fatal(err)
 		}
-		race(t, key, store.PutOpts{IfMatch: etag})
+		race(t, key, "update", store.PutOpts{IfMatch: etag})
 	}
 }
 
