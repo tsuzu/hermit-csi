@@ -306,3 +306,50 @@ func (v *VG) MappedRanges(ctx context.Context, id int) ([]backup.Range, error) {
 	}
 	return ParseThinDump(out, id)
 }
+
+// PoolUsage is how full a thin pool is.
+type PoolUsage struct {
+	VG, Pool      string
+	Size          int64   // data space, bytes
+	DataRatio     float64 // 0..1
+	MetadataRatio float64 // 0..1
+}
+
+// PoolUsage reports the thin pool's data and metadata usage. A pool that runs
+// out of data space stops all writes; one that runs out of metadata can
+// corrupt, so both are worth alerting on.
+func (v *VG) PoolUsage(ctx context.Context) (PoolUsage, error) {
+	out, err := v.run(ctx, "lvs", "--noheadings", "--nosuffix", "--units", "b", "--separator", "|",
+		"-o", "lv_size,data_percent,metadata_percent", v.path(v.Pool))
+	if err != nil {
+		return PoolUsage{}, err
+	}
+	return parsePoolUsage(v.Name, v.Pool, out)
+}
+
+func parsePoolUsage(vg, pool string, out []byte) (PoolUsage, error) {
+	f := strings.Split(strings.TrimSpace(string(out)), "|")
+	if len(f) != 3 {
+		return PoolUsage{}, fmt.Errorf("unexpected lvs output %q", out)
+	}
+	u := PoolUsage{VG: vg, Pool: pool}
+	var err error
+	if u.Size, err = strconv.ParseInt(strings.TrimSpace(f[0]), 10, 64); err != nil {
+		return PoolUsage{}, fmt.Errorf("lv_size %q: %w", f[0], err)
+	}
+	pct := func(s string) (float64, error) {
+		s = strings.TrimSpace(s)
+		if s == "" { // inactive pool
+			return 0, fmt.Errorf("thin pool %s/%s is not active", vg, pool)
+		}
+		p, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64) // some locales use a comma
+		return p / 100, err
+	}
+	if u.DataRatio, err = pct(f[1]); err != nil {
+		return PoolUsage{}, err
+	}
+	if u.MetadataRatio, err = pct(f[2]); err != nil {
+		return PoolUsage{}, err
+	}
+	return u, nil
+}

@@ -31,10 +31,12 @@ type Controller struct {
 	s     store.ObjectStore
 	locks keyLock
 	http  *http.Client
+	m     *metrics
 }
 
 func NewController(cfg Config) *Controller {
-	return &Controller{cfg: cfg, s: cfg.Store, http: &http.Client{Timeout: 30 * time.Minute}}
+	m := newMetrics("controller", cfg.Version)
+	return &Controller{cfg: cfg, s: instrumentStore(cfg.Store, m), m: m, http: &http.Client{Timeout: 30 * time.Minute}}
 }
 
 func (c *Controller) ControllerGetCapabilities(context.Context, *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
@@ -437,11 +439,21 @@ func (c *Controller) gcLoop(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		n, err := backup.GC(ctx, c.s, c.cfg.GCGrace, time.Now())
-		if err != nil {
-			klog.ErrorS(err, "chunk GC failed")
-			continue
-		}
-		klog.InfoS("chunk GC done", "deleted", n)
+		c.runGC(ctx)
 	}
+}
+
+func (c *Controller) runGC(ctx context.Context) {
+	start := time.Now()
+	n, err := backup.GC(ctx, c.s, c.cfg.GCGrace, start)
+	c.m.gcDur.Observe(time.Since(start).Seconds())
+	c.m.gcDeleted.Add(float64(n))
+	if err != nil {
+		c.m.gcRuns.WithLabelValues(resultFailure).Inc()
+		klog.ErrorS(err, "chunk GC failed")
+		return
+	}
+	c.m.gcRuns.WithLabelValues(resultSuccess).Inc()
+	c.m.gcLastSuccess.SetToCurrentTime()
+	klog.InfoS("chunk GC done", "deleted", n)
 }

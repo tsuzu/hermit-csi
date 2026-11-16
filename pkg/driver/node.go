@@ -56,6 +56,7 @@ type Node struct {
 	locks   keyLock
 	freeze  func(ctx context.Context, path string, freeze bool) error
 	now     func() time.Time
+	m       *metrics
 
 	opMu sync.Mutex
 	ops  map[string]*op
@@ -82,11 +83,14 @@ func NewNode(cfg Config) (*Node, error) {
 }
 
 func newNode(cfg Config, vg thinVG) *Node {
-	return &Node{
+	m := newMetrics("node", cfg.Version)
+	s := instrumentStore(cfg.Store, m)
+	n := &Node{
 		cfg:     cfg,
-		s:       cfg.Store,
+		s:       s,
 		vg:      vg,
-		eng:     &backup.Engine{S: cfg.Store, Parallel: cfg.Parallel, GCGrace: cfg.GCGrace},
+		m:       m,
+		eng:     &backup.Engine{S: s, Parallel: cfg.Parallel, GCGrace: cfg.GCGrace},
 		states:  stateStore{dir: cfg.StateDir},
 		mounter: &mount.SafeFormatAndMount{Interface: mount.New(""), Exec: utilexec.New()},
 		freeze:  fsfreeze,
@@ -95,6 +99,8 @@ func newNode(cfg Config, vg thinVG) *Node {
 
 		lastBackup: map[string]time.Time{},
 	}
+	m.reg.MustRegister(nodeCollector{n})
+	return n
 }
 
 func fsfreeze(ctx context.Context, path string, freeze bool) error {
@@ -234,6 +240,7 @@ func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, s
 	if err != nil {
 		return err
 	}
+	source := "local"
 	if reuse {
 		klog.InfoS("local copy is current, skipping restore", "volume", vol, "generation", m.Generation)
 		if err := n.vg.Activate(ctx, vol); err != nil {
@@ -244,6 +251,7 @@ func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, s
 			return err
 		}
 		st = &volState{VolumeID: vol, Generation: m.Generation, BaseSnap: snapName(vol, m.Generation)}
+		source = "restore"
 	}
 	st.Epoch, st.ETag, st.Fenced = epoch, etag, false
 	st.Staged, st.Block, st.Staging = true, block, staging
@@ -251,12 +259,15 @@ func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, s
 	if interval > 0 {
 		st.BackupInterval = interval.String()
 	}
+	// The local LV now equals latest.json: S3 is in sync as of now, and the
+	// next periodic backup is due one interval from now.
+	now := n.now()
+	st.LastBackup, st.BackupFailures = now, 0
 	if err := n.states.save(st); err != nil {
 		return err
 	}
-	// The local LV now equals latest.json: the next periodic backup is due
-	// one interval from now.
-	n.markBackup(vol, n.now())
+	n.markBackup(vol, now)
+	n.m.stages.WithLabelValues(source).Inc()
 
 	// Advertise the snapshot agent address for in-use snapshots.
 	if n.cfg.AgentAdvertise != "" && o.Address != n.cfg.AgentAdvertise {
@@ -297,6 +308,18 @@ func (n *Node) removeLocal(ctx context.Context, vol string) error {
 }
 
 func (n *Node) restore(ctx context.Context, vol string, m *manifest.Manifest) error {
+	start := time.Now()
+	if err := n.restoreLV(ctx, vol, m); err != nil {
+		n.m.restores.WithLabelValues(resultFailure).Inc()
+		return err
+	}
+	n.m.restores.WithLabelValues(resultSuccess).Inc()
+	n.m.restoreDur.Observe(time.Since(start).Seconds())
+	n.m.restoredBytes.Add(float64(m.UsedBytes()))
+	return nil
+}
+
+func (n *Node) restoreLV(ctx context.Context, vol string, m *manifest.Manifest) error {
 	start := time.Now()
 	klog.InfoS("restoring volume from S3", "volume", vol, "generation", m.Generation, "used", m.UsedBytes())
 	if err := n.removeLocal(ctx, vol); err != nil {
@@ -366,7 +389,7 @@ func (n *Node) unstage(ctx context.Context, vol, staging string) error {
 	}
 	n.forgetBackup(vol)
 	st.Staged = false // no fsfreeze for the final backup: the fs is unmounted
-	if _, err := n.backupLocked(ctx, st); err != nil {
+	if _, err := n.backupLocked(ctx, st, triggerUnstage); err != nil {
 		if !errors.Is(err, ErrFenced) {
 			return fmt.Errorf("final backup of %s: %w", vol, err) // kubelet retries
 		}

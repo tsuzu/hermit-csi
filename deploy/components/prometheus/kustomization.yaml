@@ -1,0 +1,16 @@
+# Prometheus Operator integration: a PodMonitor that scrapes the driver pods'
+# metrics port (9811) and a PrometheusRule with alerts for stale or failing
+# backups, a full thin pool, S3 errors and chunk GC. Needs the
+# monitoring.coreos.com CRDs (e.g. kube-prometheus-stack).
+#
+#   components:
+#     - https://github.com/tsuzu/hermit-csi/deploy/components/prometheus?ref=<version>
+#
+# If your Prometheus selects monitors and rules by label (kube-prometheus-stack
+# uses release: <helm release> by default), add that label with a labels
+# transformer or a patch.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - podmonitor.yaml
+  - rules.yaml

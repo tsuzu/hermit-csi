@@ -186,3 +186,32 @@ func TestIntegrationStoreConditionalRace(t *testing.T) {
 		race(t, key, store.PutOpts{IfMatch: etag})
 	}
 }
+
+// TestIntegrationPoolMetrics checks lvs parsing against real LVM: pool usage
+// is exported and grows when a volume is written.
+func TestIntegrationPoolMetrics(t *testing.T) {
+	c := realCluster(t)
+	a := c.nodes["node-a"]
+	vg := c.vgs["node-a"].(*lvm.VG)
+	labels := map[string]string{"vg": vg.Name, "pool": vg.Pool}
+
+	vol := c.createVolume("pvc-poolmetrics", nil).VolumeId
+	c.attach(vol, "node-a")
+	before := mustMetric(t, a.m.reg, "hermit_thin_pool_data_usage_ratio", labels)
+	if size := mustMetric(t, a.m.reg, "hermit_thin_pool_size_bytes", labels); size <= 0 {
+		t.Fatalf("pool size = %v", size)
+	}
+	if meta := mustMetric(t, a.m.reg, "hermit_thin_pool_metadata_usage_ratio", labels); meta <= 0 || meta >= 1 {
+		t.Fatalf("metadata usage = %v", meta)
+	}
+	c.write("node-a", vol, 0, int(testSize), 1)
+	if after := mustMetric(t, a.m.reg, "hermit_thin_pool_data_usage_ratio", labels); after <= before {
+		t.Fatalf("data usage %v -> %v after writing %d bytes", before, after, testSize)
+	}
+	if _, err := a.BackupVolume(context.Background(), vol); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustMetric(t, a.m.reg, "hermit_backups_total", map[string]string{"trigger": "periodic", "result": "success"}); got != 1 {
+		t.Fatalf("backups{success} = %v", got)
+	}
+}

@@ -47,6 +47,24 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
+  manifests:
+    name: manifests + alert rules (kustomize, promtool)
+    runs-on: ubuntu-24.04
+    env:
+      PROMETHEUS_IMAGE: prom/prometheus:v3.5.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the manifests
+        run: |
+          kubectl kustomize deploy >/dev/null
+          kubectl kustomize deploy/scheduler >/dev/null
+          kubectl kustomize test/prometheus >/dev/null
+      - name: Check and unit-test the alert rules
+        run: |
+          yq '.spec' deploy/components/prometheus/rules.yaml > test/prometheus/rules.yaml
+          docker run --rm -v "$PWD/test/prometheus:/w" -w /w --entrypoint promtool "$PROMETHEUS_IMAGE" check rules rules.yaml
+          docker run --rm -v "$PWD/test/prometheus:/w" -w /w --entrypoint promtool "$PROMETHEUS_IMAGE" test rules rules_test.yaml
+
   integration:
     name: integration (real LVM thin pools + ${{ matrix.s3 }})
     runs-on: ubuntu-24.04

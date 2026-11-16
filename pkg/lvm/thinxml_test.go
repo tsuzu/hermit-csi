@@ -129,3 +129,19 @@ func TestChangedRangesReleasesMetadataSnap(t *testing.T) {
 		t.Fatalf("calls:\n%s", strings.Join(calls, "\n"))
 	}
 }
+
+func TestParsePoolUsage(t *testing.T) {
+	u, err := parsePoolUsage("vg", "pool", []byte("  10737418240|12.50|3,25\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Size != 10737418240 || u.DataRatio != 0.125 || u.MetadataRatio != 0.0325 || u.VG != "vg" || u.Pool != "pool" {
+		t.Fatalf("usage = %+v", u)
+	}
+	if _, err := parsePoolUsage("vg", "pool", []byte("  10737418240||\n")); err == nil {
+		t.Fatal("inactive pool accepted")
+	}
+	if _, err := parsePoolUsage("vg", "pool", []byte("garbage")); err == nil {
+		t.Fatal("garbage accepted")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/tsuzu/hermit-csi/pkg/backup"
 	"github.com/tsuzu/hermit-csi/pkg/lvm"
@@ -181,4 +182,24 @@ func (f *fakeVG) MappedRanges(_ context.Context, id int) ([]backup.Range, error)
 		}
 	}
 	return out, nil
+}
+
+// fakePoolSize is the data size the fake thin pool reports.
+const fakePoolSize = 1 << 30
+
+// PoolUsage reports the blocks the sparse files really use, like the data
+// usage of a thin pool (snapshots are full copies here, so it overcounts).
+func (f *fakeVG) PoolUsage(context.Context) (lvm.PoolUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var used int64
+	for name := range f.lvs {
+		fi, err := os.Stat(f.DevicePath(name))
+		if err != nil {
+			return lvm.PoolUsage{}, err
+		}
+		used += fi.Sys().(*syscall.Stat_t).Blocks * 512
+	}
+	return lvm.PoolUsage{VG: "fake", Pool: "pool", Size: fakePoolSize,
+		DataRatio: float64(used) / fakePoolSize, MetadataRatio: float64(len(f.lvs)) / 1000}, nil
 }

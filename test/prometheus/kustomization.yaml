@@ -1,0 +1,5 @@
+# Used by CI: the base manifests plus the Prometheus component must build.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../deploy]
+components: [../../deploy/components/prometheus]

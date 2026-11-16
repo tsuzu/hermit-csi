@@ -87,6 +87,9 @@ type Config struct {
 	BackupInterval time.Duration
 	AgentListen    string // e.g. ":9810"
 	AgentAdvertise string // e.g. "10.0.0.12:9810" (pod IP)
+
+	// MetricsListen serves Prometheus metrics on /metrics, e.g. ":9811" ("" = off).
+	MetricsListen string
 }
 
 var validID = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,95}$`)
@@ -149,12 +152,12 @@ func listen(endpoint string) (net.Listener, error) {
 	return nil, fmt.Errorf("unsupported endpoint %q", endpoint)
 }
 
-func serve(ctx context.Context, endpoint string, register func(*grpc.Server)) error {
+func serve(ctx context.Context, endpoint string, m *metrics, register func(*grpc.Server)) error {
 	l, err := listen(endpoint)
 	if err != nil {
 		return err
 	}
-	srv := grpc.NewServer(grpc.UnaryInterceptor(logInterceptor))
+	srv := grpc.NewServer(grpc.UnaryInterceptor(m.interceptor))
 	register(srv)
 	go func() {
 		<-ctx.Done()
@@ -168,7 +171,8 @@ func serve(ctx context.Context, endpoint string, register func(*grpc.Server)) er
 func RunController(ctx context.Context, cfg Config) error {
 	c := NewController(cfg)
 	go c.gcLoop(ctx)
-	return serve(ctx, cfg.Endpoint, func(s *grpc.Server) {
+	go serveMetrics(ctx, cfg.MetricsListen, c.m)
+	return serve(ctx, cfg.Endpoint, c.m, func(s *grpc.Server) {
 		csi.RegisterIdentityServer(s, &identity{cfg: cfg})
 		csi.RegisterControllerServer(s, c)
 	})
@@ -186,12 +190,13 @@ func RunNode(ctx context.Context, cfg Config) error {
 		}
 	}
 	go n.backupLoop(ctx)
+	go serveMetrics(ctx, cfg.MetricsListen, n.m)
 	go func() {
 		if err := n.serveAgent(ctx); err != nil {
 			klog.ErrorS(err, "snapshot agent stopped")
 		}
 	}()
-	return serve(ctx, cfg.Endpoint, func(s *grpc.Server) {
+	return serve(ctx, cfg.Endpoint, n.m, func(s *grpc.Server) {
 		csi.RegisterIdentityServer(s, &identity{cfg: cfg})
 		csi.RegisterNodeServer(s, n)
 	})

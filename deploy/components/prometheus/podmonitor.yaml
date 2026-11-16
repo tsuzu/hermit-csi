@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: hermit-csi
+  namespace: kube-system
+spec:
+  selector:
+    matchExpressions:
+      - {key: app, operator: In, values: [hermit-csi-node, hermit-csi-controller]}
+  namespaceSelector:
+    matchNames: [kube-system]
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s

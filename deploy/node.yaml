@@ -32,6 +32,7 @@ spec:
             - --backup-interval=5m # default; StorageClass parameter backupInterval overrides it
             - --agent-listen=:9810
             - --agent-advertise=$(POD_IP):9810
+            - --metrics-listen=:9811
             - --s3-bucket=$(S3_BUCKET)
             - --s3-prefix=$(S3_PREFIX)
             - --s3-endpoint=$(S3_ENDPOINT)
@@ -48,6 +49,7 @@ spec:
             - secretRef: {name: hermit-csi}
           ports:
             - {name: agent, containerPort: 9810}
+            - {name: metrics, containerPort: 9811}
           volumeMounts:
             - {name: socket-dir, mountPath: /csi}
             - {name: kubelet-dir, mountPath: /var/lib/kubelet, mountPropagation: Bidirectional}

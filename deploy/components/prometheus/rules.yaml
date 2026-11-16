@@ -1,0 +1,89 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hermit-csi
+  namespace: kube-system
+spec:
+  groups:
+    - name: hermit-csi
+      rules:
+        # The newest volume state in S3 is older than three backup intervals
+        # (at least 15m, so one slow first backup of a large volume does not
+        # page). Volumes with periodic backups disabled are ignored.
+        - alert: HermitBackupStale
+          expr: |
+            (time() - hermit_volume_last_backup_timestamp_seconds)
+              > clamp_min(3 * (hermit_volume_backup_interval_seconds > 0), 900)
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: Volume {{ $labels.volume }} has not been backed up to S3 recently
+            description: >-
+              The last successful backup of {{ $labels.volume }} on {{ $labels.pod }} was
+              {{ $value | humanizeDuration }} ago. Data written since then would be lost if the node failed.
+        - alert: HermitBackupFailing
+          expr: hermit_volume_backup_consecutive_failures >= 3
+          labels: {severity: warning}
+          annotations:
+            summary: Backups of {{ $labels.volume }} keep failing
+            description: >-
+              {{ $value }} backups in a row of {{ $labels.volume }} on {{ $labels.pod }} failed; see the
+              node plugin logs ("periodic backup failed").
+        - alert: HermitVolumeFenced
+          expr: hermit_volume_fenced == 1
+          for: 15m
+          labels: {severity: critical}
+          annotations:
+            summary: Volume {{ $labels.volume }} is still staged on a node that lost ownership
+            description: >-
+              Another node took over {{ $labels.volume }} (e.g. after a force detach), but it is still
+              staged on {{ $labels.pod }}. Writes there are no longer backed up and will be lost; stop the pod
+              still using it on that node.
+        - alert: HermitThinPoolDataFilling
+          expr: hermit_thin_pool_data_usage_ratio > 0.8
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: Thin pool {{ $labels.vg }}/{{ $labels.pool }} is {{ $value | humanizePercentage }} full
+            description: When the pool's data space runs out, every volume on the node stops accepting writes.
+        - alert: HermitThinPoolDataFull
+          expr: hermit_thin_pool_data_usage_ratio > 0.95
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: Thin pool {{ $labels.vg }}/{{ $labels.pool }} is {{ $value | humanizePercentage }} full
+            description: Extend the pool (lvextend) or move volumes off the node.
+        - alert: HermitThinPoolMetadataFilling
+          expr: hermit_thin_pool_metadata_usage_ratio > 0.8
+          for: 15m
+          labels: {severity: critical}
+          annotations:
+            summary: Thin pool {{ $labels.vg }}/{{ $labels.pool }} metadata is {{ $value | humanizePercentage }} full
+            description: A thin pool that runs out of metadata space can be corrupted. Extend it with lvextend --poolmetadatasize.
+        - alert: HermitS3Errors
+          expr: sum by (namespace, pod, operation) (rate(hermit_s3_requests_total{result="error"}[10m])) > 0
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: S3 {{ $labels.operation }} requests from {{ $labels.pod }} are failing
+            description: Check the S3 endpoint, credentials and bucket permissions.
+        - alert: HermitRestoreFailing
+          expr: increase(hermit_restores_total{result="failure"}[30m]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: Restoring a volume from S3 failed on {{ $labels.pod }}
+            description: Pods using the volume cannot start until the restore succeeds; see the node plugin logs.
+        - alert: HermitChunkGCStale
+          expr: time() - hermit_gc_last_success_timestamp_seconds > 4 * 3600
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: Chunk GC has not succeeded for {{ $value | humanizeDuration }}
+            description: Unreferenced chunks are not being deleted, so the bucket keeps growing. Assumes --gc-interval=1h.
+        - alert: HermitMetricsDown
+          expr: up{job="kube-system/hermit-csi"} == 0
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: Cannot scrape hermit-csi metrics from {{ $labels.pod }}
+            description: Without metrics, stale backups on that node would go unnoticed.

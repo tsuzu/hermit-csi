@@ -27,6 +27,9 @@ spec:
             - --s3-path-style=$(S3_PATH_STYLE)
             - --gc-interval=1h
             - --gc-grace=24h
+            - --metrics-listen=:9811
+          ports:
+            - {name: metrics, containerPort: 9811}
           envFrom:
             - configMapRef: {name: hermit-csi}
             - secretRef: {name: hermit-csi}

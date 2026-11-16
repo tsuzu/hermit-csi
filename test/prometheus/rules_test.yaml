@@ -1,0 +1,82 @@
+# promtool unit tests for deploy/components/prometheus/rules.yaml.
+# CI extracts the rule groups to rules.yaml (yq '.spec') and runs
+#   promtool test rules test/prometheus/rules_test.yaml
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # vol-ok is backed up every 2m; vol-stuck stops at t=0 (interval 2m, so the
+  # 15m floor applies); vol-off has periodic backups disabled.
+  - interval: 1m
+    input_series:
+      - series: hermit_volume_last_backup_timestamp_seconds{pod="node-a",volume="vol-ok"}
+        values: 0+60x40
+      - series: hermit_volume_backup_interval_seconds{pod="node-a",volume="vol-ok"}
+        values: 120x40
+      - series: hermit_volume_last_backup_timestamp_seconds{pod="node-a",volume="vol-stuck"}
+        values: 0x40
+      - series: hermit_volume_backup_interval_seconds{pod="node-a",volume="vol-stuck"}
+        values: 120x40
+      - series: hermit_volume_last_backup_timestamp_seconds{pod="node-a",volume="vol-off"}
+        values: 0x40
+      - series: hermit_volume_backup_interval_seconds{pod="node-a",volume="vol-off"}
+        values: 0x40
+    alert_rule_test:
+      - eval_time: 18m # stale for 15m but not yet for the 5m "for"
+        alertname: HermitBackupStale
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: HermitBackupStale
+        exp_alerts:
+          - exp_labels: {severity: warning, pod: node-a, volume: vol-stuck}
+            exp_annotations:
+              summary: Volume vol-stuck has not been backed up to S3 recently
+              description: >-
+                The last successful backup of vol-stuck on node-a was 25m 0s ago. Data written since then
+                would be lost if the node failed.
+  # A long interval raises the threshold above the floor.
+  - interval: 1m
+    input_series:
+      - series: hermit_volume_last_backup_timestamp_seconds{pod="node-a",volume="vol-hourly"}
+        values: 0x200
+      - series: hermit_volume_backup_interval_seconds{pod="node-a",volume="vol-hourly"}
+        values: 3600x200
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: HermitBackupStale
+        exp_alerts: []
+      - eval_time: 3h10m
+        alertname: HermitBackupStale
+        exp_alerts:
+          - exp_labels: {severity: warning, pod: node-a, volume: vol-hourly}
+            exp_annotations:
+              summary: Volume vol-hourly has not been backed up to S3 recently
+              description: >-
+                The last successful backup of vol-hourly on node-a was 3h 10m 0s ago. Data written since then
+                would be lost if the node failed.
+  - interval: 1m
+    input_series:
+      - series: hermit_volume_backup_consecutive_failures{pod="node-a",volume="vol"}
+        values: 0 1 2 3
+      - series: hermit_volume_fenced{pod="node-a",volume="vol"}
+        values: 1x20
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HermitBackupFailing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: HermitBackupFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, pod: node-a, volume: vol}
+            exp_annotations:
+              summary: Backups of vol keep failing
+              description: >-
+                3 backups in a row of vol on node-a failed; see the node plugin logs ("periodic backup failed").
+      - eval_time: 16m
+        alertname: HermitVolumeFenced
+        exp_alerts:
+          - exp_labels: {severity: critical, pod: node-a, volume: vol}
+            exp_annotations:
+              summary: Volume vol is still staged on a node that lost ownership
+              description: >-
+                Another node took over vol (e.g. after a force detach), but it is still staged on node-a.
+                Writes there are no longer backed up and will be lost; stop the pod still using it on that node.

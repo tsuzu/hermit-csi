@@ -25,8 +25,13 @@ type agentSnapshotRequest struct {
 	SnapshotID string `json:"snapshotId"`
 }
 
-// BackupVolume runs one incremental backup of a staged volume.
+// BackupVolume runs one incremental backup of a staged volume (counted as a
+// periodic backup in the metrics).
 func (n *Node) BackupVolume(ctx context.Context, vol string) (*manifest.Manifest, error) {
+	return n.backupVolume(ctx, vol, triggerPeriodic)
+}
+
+func (n *Node) backupVolume(ctx context.Context, vol, trigger string) (*manifest.Manifest, error) {
 	defer n.locks.lock(vol)()
 	st, err := n.states.load(vol)
 	if err != nil {
@@ -35,7 +40,7 @@ func (n *Node) BackupVolume(ctx context.Context, vol string) (*manifest.Manifest
 	if st == nil || !st.Staged {
 		return nil, fmt.Errorf("volume %s is not staged on this node", vol)
 	}
-	m, err := n.backupLocked(ctx, st)
+	m, err := n.backupLocked(ctx, st, trigger)
 	if serr := n.states.save(st); err == nil {
 		err = serr
 	}
@@ -43,29 +48,72 @@ func (n *Node) BackupVolume(ctx context.Context, vol string) (*manifest.Manifest
 }
 
 // backupLocked uploads everything that changed since st.BaseSnap and moves the
-// base forward. It updates st in place; the caller persists it.
+// base forward. It updates st in place (including the sync time and failure
+// count reported as metrics); the caller persists it.
 // Returns the manifest that now equals the volume content.
-func (n *Node) backupLocked(ctx context.Context, st *volState) (*manifest.Manifest, error) {
+func (n *Node) backupLocked(ctx context.Context, st *volState, trigger string) (*manifest.Manifest, error) {
+	start := n.now()
+	r, err := n.doBackup(ctx, st)
+	result := resultFailure
+	switch {
+	case err == nil && r.uploaded:
+		result = resultSuccess
+	case err == nil:
+		result = resultUnchanged
+	case errors.Is(err, ErrFenced):
+		result = resultFenced
+	}
+	n.m.observeBackup(trigger, result, n.now().Sub(start))
+	if err != nil {
+		if result == resultFailure {
+			st.BackupFailures++
+		}
+		return nil, err
+	}
+	// S3 now holds (or already held) the volume as of the snapshot.
+	st.LastBackup, st.BackupFailures = r.snapAt, 0
+	if r.uploaded {
+		n.m.uploadedBytes.Add(float64(r.stats.BytesUploaded))
+		n.m.uploadedChunks.Add(float64(r.stats.ChunksUploaded))
+		n.m.changedChunks.Add(float64(r.stats.ChunksChanged))
+	}
+	if r.rescan {
+		n.m.rescans.Inc()
+	}
+	return r.m, nil
+}
+
+type backupResult struct {
+	m        *manifest.Manifest
+	snapAt   time.Time // when the snapshot that m equals was taken
+	uploaded bool      // false: nothing changed, m is the old manifest
+	rescan   bool      // no usable base snapshot
+	stats    backup.Stats
+}
+
+func (n *Node) doBackup(ctx context.Context, st *volState) (backupResult, error) {
+	var r backupResult
 	vol := st.VolumeID
 	if st.Fenced {
-		return nil, ErrFenced
+		return r, ErrFenced
 	}
 	base, etag, err := manifest.Load(ctx, n.s, manifest.LatestKey(vol))
 	if err != nil {
-		return nil, err
+		return r, err
 	}
 	if etag != st.ETag || base.Epoch != st.Epoch {
 		st.Fenced = true
-		return nil, fmt.Errorf("%w (epoch %d -> %d)", ErrFenced, st.Epoch, base.Epoch)
+		return r, fmt.Errorf("%w (epoch %d -> %d)", ErrFenced, st.Epoch, base.Epoch)
 	}
 
 	newGen := base.Generation + 1
 	snap := snapName(vol, newGen)
 	if err := n.vg.Remove(ctx, snap); err != nil { // leftover of a failed attempt
-		return nil, err
+		return r, err
 	}
+	r.snapAt = n.now()
 	if err := n.takeSnapshot(ctx, st, snap); err != nil {
-		return nil, err
+		return r, err
 	}
 	committed := false
 	defer func() {
@@ -78,12 +126,12 @@ func (n *Node) backupLocked(ctx context.Context, st *volState) (*manifest.Manife
 
 	newLV, err := n.vg.Get(ctx, snap)
 	if err != nil || newLV == nil {
-		return nil, fmt.Errorf("snapshot %s vanished: %v", snap, err)
+		return r, fmt.Errorf("snapshot %s vanished: %v", snap, err)
 	}
 	var baseLV *lvm.LV
 	if st.BaseSnap != "" {
 		if baseLV, err = n.vg.Get(ctx, st.BaseSnap); err != nil {
-			return nil, err
+			return r, err
 		}
 	}
 
@@ -91,16 +139,17 @@ func (n *Node) backupLocked(ctx context.Context, st *volState) (*manifest.Manife
 	if baseLV != nil && st.Generation == base.Generation {
 		ranges, err := n.vg.ChangedRanges(ctx, baseLV.ThinID, newLV.ThinID)
 		if err != nil {
-			return nil, err
+			return r, err
 		}
 		changed = backup.ChunksForRanges(ranges, base.ChunkSize, base.NumChunks())
 	} else {
 		// No usable base: scan what is allocated locally plus everything the
 		// manifest says is non-zero. Reads more, but uploads only differences.
 		klog.InfoS("no base snapshot, rescanning allocated blocks", "volume", vol)
+		r.rescan = true
 		ranges, err := n.vg.MappedRanges(ctx, newLV.ThinID)
 		if err != nil {
-			return nil, err
+			return r, err
 		}
 		for i, h := range base.Chunks {
 			if h != "" {
@@ -114,30 +163,33 @@ func (n *Node) backupLocked(ctx context.Context, st *volState) (*manifest.Manife
 	if len(changed) > 0 || baseLV == nil {
 		f, err := os.Open(n.vg.DevicePath(snap))
 		if err != nil {
-			return nil, err
+			return r, err
 		}
 		var stats backup.Stats
 		next, stats, err = n.eng.Backup(ctx, f, base, changed)
+		r.stats = stats
 		f.Close()
 		if err != nil {
-			return nil, err
+			return r, err
 		}
 		next.Generation, next.Epoch = newGen, st.Epoch
 		newETag, err := manifest.Save(ctx, n.s, manifest.LatestKey(vol), next, store.PutOpts{IfMatch: st.ETag})
 		if err != nil {
 			if errors.Is(err, store.ErrPrecondition) {
 				st.Fenced = true
-				return nil, fmt.Errorf("%w: latest.json changed under us", ErrFenced)
+				return r, fmt.Errorf("%w: latest.json changed under us", ErrFenced)
 			}
-			return nil, err
+			return r, err
 		}
 		st.ETag, st.Generation = newETag, newGen
+		r.uploaded = true
 		klog.InfoS("backup done", "volume", vol, "generation", newGen,
 			"scanned", stats.ChunksScanned, "changed", stats.ChunksChanged,
 			"uploaded", stats.ChunksUploaded, "bytes", stats.BytesUploaded)
 	} else {
 		// Nothing changed: keep the old base and generation.
-		return base, nil
+		r.m = base
+		return r, nil
 	}
 
 	committed = true
@@ -150,7 +202,8 @@ func (n *Node) backupLocked(ctx context.Context, st *volState) (*manifest.Manife
 		klog.ErrorS(err, "tag base snapshot", "lv", snap)
 	}
 	st.BaseSnap = snap
-	return next, nil
+	r.m = next
+	return r, nil
 }
 
 // takeSnapshot creates a thin snapshot, freezing a mounted filesystem around
@@ -173,7 +226,7 @@ func (n *Node) takeSnapshot(ctx context.Context, st *volState, snap string) erro
 // SnapshotVolume backs up a staged volume and records the result as an
 // immutable snapshot manifest.
 func (n *Node) SnapshotVolume(ctx context.Context, vol, snapID string) error {
-	m, err := n.BackupVolume(ctx, vol)
+	m, err := n.backupVolume(ctx, vol, triggerSnapshot)
 	if err != nil {
 		return err
 	}

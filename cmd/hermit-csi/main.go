@@ -46,6 +46,7 @@ func main() {
 		interval   = flag.Duration("backup-interval", 5*time.Minute, "default periodic backup interval (node); the StorageClass parameter backupInterval overrides it per volume, 0 disables it for volumes without one")
 		agentAddr  = flag.String("agent-listen", ":9810", "snapshot agent listen address (node)")
 		advertise  = flag.String("agent-advertise", "", "snapshot agent address the controller should use, host:port (node)")
+		metrics    = flag.String("metrics-listen", ":9811", "Prometheus metrics listen address (/metrics); empty disables it")
 		lvmTimeout = flag.Duration("lvm-timeout", 5*time.Minute, "timeout for each LVM / thin-provisioning-tools command (node); 0 = none")
 	)
 	flag.Parse()
@@ -88,6 +89,7 @@ func main() {
 		BackupInterval: *interval,
 		AgentListen:    *agentAddr,
 		AgentAdvertise: *advertise,
+		MetricsListen:  *metrics,
 	}
 
 	switch *mode {

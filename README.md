@@ -80,7 +80,9 @@ deploy/            CSIDriver, RBAC, controller Deployment, node DaemonSet, Stora
 hack/it-setup.sh   creates thin pools on loop devices for the integration tests
 scheduler/         HermitLocality scheduler plugin (separate Go module, depends on k8s.io/kubernetes)
 deploy/scheduler/  hermit-scheduler configuration, RBAC, Deployment
+deploy/components/ optional kustomize components: web-identity (IAM role via SA token), prometheus (PodMonitor, alerts)
 test/e2e/          kind end-to-end test (run.sh, cluster config, kustomize overlay)
+test/prometheus/   promtool unit tests for the alert rules
 ```
 
 ## Tests
@@ -218,11 +220,46 @@ Permissions on the bucket (and prefix): the controller and node plugin need `s3:
 Pushing a `vX.Y.Z` tag on a commit whose CI on `main` is green makes `.github/workflows/release.yaml` push both images to ghcr
 as `X.Y.Z` / `X.Y` / `latest`, and create a GitHub release with manifests pinned to those images (`hermit-csi.yaml`, `hermit-scheduler.yaml`, `hermit-csi-config.yaml`).
 
+## Monitoring
+
+The controller and node plugin serve Prometheus metrics on `:9811/metrics` (`--metrics-listen`; container port `metrics`).
+With the Prometheus Operator, add the component `deploy/components/prometheus` for a PodMonitor and a PrometheusRule with the alerts below:
+
+```yaml
+components:
+  - https://github.com/tsuzu/hermit-csi/deploy/components/prometheus?ref=<version>
+```
+
+**Are backups reaching S3?** The node plugin reports every volume staged on it (series disappear on unstage):
+
+| Metric | Meaning |
+|---|---|
+| `hermit_volume_last_backup_timestamp_seconds{volume}` | Time of the newest volume state known to be in S3: when the snapshot of the last successful backup was taken (also when nothing changed), or when the volume was staged. Persisted in the node state, so it survives restarts |
+| `hermit_volume_backup_interval_seconds{volume}` | Effective interval (StorageClass `backupInterval` or `--backup-interval`; 0 = periodic backups off) |
+| `hermit_volume_backup_consecutive_failures{volume}` | Failed backups since the last successful one |
+| `hermit_volume_fenced{volume}` | 1 if another node took the volume over while it is still staged here, so this node no longer backs it up |
+| `hermit_volume_generation{volume}` | Generation of the latest backup in S3 |
+
+The amount of unprotected data is bounded by `time() - hermit_volume_last_backup_timestamp_seconds`; the alert `HermitBackupStale` fires when it exceeds three intervals (at least 15 minutes).
+
+Other metrics:
+
+- Backups: `hermit_backups_total{trigger, result}` (trigger `periodic` / `snapshot` / `unstage`, result `success` / `unchanged` / `fenced` / `failure`), `hermit_backup_duration_seconds`, `hermit_backup_uploaded_bytes_total`, `hermit_backup_uploaded_chunks_total`, `hermit_backup_changed_chunks_total`, `hermit_backup_full_rescans_total` (no base snapshot, all allocated blocks were read)
+- Stage and restore: `hermit_stages_total{source="local|restore"}` (how often the scheduler plugin avoided a restore), `hermit_restores_total{result}`, `hermit_restore_duration_seconds`, `hermit_restore_bytes_total`
+- Thin pool: `hermit_thin_pool_data_usage_ratio`, `hermit_thin_pool_metadata_usage_ratio`, `hermit_thin_pool_size_bytes` (read with `lvs` on each scrape)
+- S3: `hermit_s3_requests_total{operation, result}` (`ok` / `not_found` / `precondition_failed` / `canceled` / `error`), `hermit_s3_request_duration_seconds`
+- CSI: `hermit_csi_operations_total{method, code}`, `hermit_csi_operation_duration_seconds`
+- Chunk GC (controller): `hermit_gc_runs_total{result}`, `hermit_gc_deleted_chunks_total`, `hermit_gc_last_success_timestamp_seconds`, `hermit_gc_duration_seconds`
+- `hermit_build_info{version, mode}`, plus the standard Go and process metrics
+
+Alerts in the PrometheusRule: `HermitBackupStale`, `HermitBackupFailing` (3 failures in a row), `HermitVolumeFenced`, `HermitThinPoolDataFilling` (80%), `HermitThinPoolDataFull` (95%), `HermitThinPoolMetadataFilling` (80%), `HermitS3Errors`, `HermitRestoreFailing`, `HermitChunkGCStale` and `HermitMetricsDown`.
+They are unit-tested with `promtool test rules` (`test/prometheus/`).
+
 ## Known limitations / TODO
 
 - The controller must run as a single replica (its locks are in-process)
 - Volume expansion (ControllerExpandVolume) is not supported
 - A pod stays in `ContainerCreating` until the full restore finishes. Lazy restore via ublk / NBD is a possible future extension
 - The controller talks to node agents over HTTP with bearer-token authentication. Use a NetworkPolicy or mTLS in production
-- dmeventd monitoring is disabled inside the container, so thin pool autoextend (`thin_pool_autoextend_threshold`) does not work. Monitor pool usage on the node
+- dmeventd monitoring is disabled inside the container, so thin pool autoextend (`thin_pool_autoextend_threshold`) does not work. Watch `hermit_thin_pool_data_usage_ratio` instead (alerts `HermitThinPoolData*`)
 - Chunks are not compressed (the code is structured so that zstd compression is easy to add)

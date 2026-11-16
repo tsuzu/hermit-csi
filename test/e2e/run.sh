@@ -357,6 +357,37 @@ EOF
   "${K[@]}" -n "$NS" delete pod probe --wait
 }
 
+# metrics POD: the driver's /metrics, through the API server's pod proxy.
+metrics() { "${K[@]}" get --raw "/api/v1/namespaces/kube-system/pods/$1:9811/proxy/metrics"; }
+
+# metric_value POD SERIES: value of the series whose name and labels start with SERIES.
+# Empty if the series is missing (not an error, so callers can report it).
+metric_value() { { metrics "$1" | grep -F "$2" | grep -v '^#' || true; } | awk 'NR == 1 {print $NF}'; }
+
+# check_metrics NODE PV: the node reports a recent backup of the staged PV,
+# the in-use snapshot's backup, and its thin pool; the controller reports GC.
+check_metrics() {
+  local pod last now age
+  pod=$(driver_pod "$1")
+  last=$(metric_value "$pod" "hermit_volume_last_backup_timestamp_seconds{volume=\"$2\"}")
+  [ -n "$last" ] || { metrics "$pod" | grep '^hermit_' || true; fail "no last-backup metric for $2 on $1"; }
+  now=$(date +%s)
+  age=$(awk -v n="$now" -v l="$last" 'BEGIN{printf "%d", n - l}')
+  [ "$age" -ge 0 ] && [ "$age" -lt 600 ] || fail "last backup of $2 is ${age}s old"
+  echo "ok: last backup of $2 on $1 was ${age}s ago"
+  expect_eq "consecutive failures of $2" "$(metric_value "$pod" "hermit_volume_backup_consecutive_failures{volume=\"$2\"}")" 0
+  expect_eq "fenced $2" "$(metric_value "$pod" "hermit_volume_fenced{volume=\"$2\"}")" 0
+  local snaps; snaps=$(metric_value "$pod" 'hermit_backups_total{result="success",trigger="snapshot"}')
+  [ "${snaps:-0}" -ge 1 ] || fail "no successful snapshot backup counted on $1"
+  echo "ok: snapshot backups on $1 = $snaps"
+  local pool; pool=$(metric_value "$pod" "hermit_thin_pool_data_usage_ratio{")
+  awk -v p="$pool" 'BEGIN{exit !(p > 0 && p < 1)}' || fail "thin pool usage on $1 = '$pool'"
+  echo "ok: thin pool usage on $1 = $pool"
+  local ctl; ctl=$("${K[@]}" -n kube-system get pod -l app=hermit-csi-controller -o jsonpath='{.items[0].metadata.name}')
+  metrics "$ctl" | grep -q '^hermit_gc_last_success_timestamp_seconds ' || fail "controller lacks GC metrics"
+  expect_eq "controller S3 errors" "$(metrics "$ctl" | grep -c '^hermit_s3_requests_total{.*result="error"' || true)" 0
+}
+
 # ------------------------------------------------------------------ test
 
 test_filesystem() {
@@ -430,6 +461,9 @@ EOF
 md5sum -c /data/a.md5 /data/b.md5
 test ! -e /data/c.txt'
   delete_pod fs-c1 fs-clone
+
+  log "metrics on $n2"
+  check_metrics "$n2" "$pv"
   delete_pod fs-r3 fs-data
 }
 

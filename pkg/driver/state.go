@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // volState is the node-local record of a volume's LV, persisted as JSON so
@@ -22,6 +23,12 @@ type volState struct {
 	Staging    string `json:"staging,omitempty"`
 	// BackupInterval overrides the node default (from the volume context).
 	BackupInterval string `json:"backupInterval,omitempty"`
+	// LastBackup is when the newest state known to be in S3 was taken: the
+	// snapshot time of the last successful backup, or the stage time (the
+	// local LV then equals latest.json). Exported as a metric.
+	LastBackup time.Time `json:"lastBackup,omitzero"`
+	// BackupFailures counts failed backups since the last successful one.
+	BackupFailures int `json:"backupFailures,omitempty"`
 }
 
 type stateStore struct{ dir string }
