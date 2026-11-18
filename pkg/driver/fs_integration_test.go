@@ -19,6 +19,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -270,9 +273,28 @@ func (c *fsCluster) stats(m *fsMount) (b, in *csi.VolumeUsage) {
 	if b == nil || in == nil {
 		c.t.Fatalf("%s stats lack BYTES or INODES: %v", c.fsType, resp.GetUsage())
 	}
-	// The filesystem metadata (journal, inode tables, log) is not counted.
-	if b.Total > c.size || b.Total < c.size*3/4 {
+	// statfs, like df, leaves out the filesystem's own metadata (journal,
+	// inode tables, log): on the 16 MiB ext4 volume that is about 30%.
+	if b.Total > c.size || b.Total <= c.size/2 {
 		c.t.Fatalf("%s total = %d bytes, want about the volume size %d", c.fsType, b.Total, c.size)
+	}
+	// Cross-check the arithmetic with df on the same mount (nothing writes
+	// to it in between).
+	out, err := exec.Command("df", "-B1", "--output=size,used,avail,itotal,iused", m.target).Output()
+	if err != nil {
+		c.t.Fatalf("df %s: %v", m.target, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var df []int64
+	for _, f := range strings.Fields(lines[len(lines)-1]) {
+		v, err := strconv.ParseInt(f, 10, 64)
+		if err != nil {
+			c.t.Fatalf("df output %q: %v", out, err)
+		}
+		df = append(df, v)
+	}
+	if want := []int64{b.Total, b.Used, b.Available, in.Total, in.Used}; !slices.Equal(df, want) {
+		c.t.Fatalf("%s stats (size, used, avail, inodes, iused) = %v, df reports %v", c.fsType, want, df)
 	}
 	if b.Used < 0 || b.Available <= 0 || b.Used+b.Available > b.Total {
 		c.t.Fatalf("%s bytes inconsistent: %v", c.fsType, b)
