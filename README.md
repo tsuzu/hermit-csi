@@ -18,6 +18,7 @@ snapshots/<id>.json.gz       manifest as of a VolumeSnapshot (immutable)
 | ControllerPublish | Points `owner.json` at the new node and bumps the epoch. Also writes the epoch into `latest.json`, which changes its ETag, so the old node's conditional writes (If-Match) fail (fencing) |
 | NodeStage | If the local LV's generation matches `latest.json`, uses it as is. Otherwise recreates the thin LV, restores it from S3 in parallel, and takes a base snapshot right after |
 | Periodic backup | At each volume's interval (see below): thin snapshot -> `thin_delta` against the previous base for the changed blocks -> read only those chunks, PUT only hashes S3 does not have yet -> replace `latest.json` with If-Match |
+| NodeGetVolumeStats | Filesystem: bytes and inodes from `statfs` of the mount. Block: the device size only. Reads only the node's state file and the mount or device (no LVM command, no S3 request), so kubelet's per-minute polling is cheap |
 | NodeUnstage | Final backup after unmounting. The LV is kept (no restore needed if the volume comes back to the same node) |
 | ControllerUnpublish | Releases ownership and bumps the epoch (a force detach after a node failure also locks out the old node) |
 | CreateSnapshot | Detached: a copy of `latest.json`. In use: asks the owning node's agent to upload the changes up to that point, then freezes the manifest |
@@ -110,7 +111,7 @@ Integration tests (root, real LVM, MinIO):
 
 They run the E2E scenarios above on real LVM, and also test Filesystem mode (ext4 / xfs):
 formatting and mounting in NodeStage, mounting a restored volume without reformatting it, `fsfreeze` during backups of a mounted filesystem (writes that were never fsynced are included),
-unmounting on a fenced old node, and creating volumes from in-use snapshots. They need `mkfs.ext4`, `mkfs.xfs` and `fsfreeze`.
+unmounting on a fenced old node, creating volumes from in-use snapshots, and `NodeGetVolumeStats` (used bytes and inodes grow with written files, the total is about the volume size). They need `mkfs.ext4`, `mkfs.xfs` and `fsfreeze`.
 
 ```sh
 # Open-source MinIO is archived and no images or binaries are published anymore, so build the last release from source
@@ -130,7 +131,7 @@ CI (`.github/workflows/ci.yaml`) runs these jobs on every push and pull request:
 - **integration**: integration tests on two thin pools on loop devices, once with MinIO and once with SeaweedFS
 - **scheduler**: vet / tests of the scheduler plugin (runs the real kube-scheduler against a fake API server and checks where pods are bound)
 - **e2e** (once with MinIO, once with SeaweedFS, S3 credentials from their STS only): installs deploy/ and deploy/scheduler/ into a kind cluster (two workers, thin pools on loop devices) and runs them with real kubelets, CSI sidecars, snapshot-controller and hermit-scheduler (`test/e2e/run.sh`).
-  It checks moving Filesystem / Block volumes between nodes with a restore, returning to the node with the local copy even when the other node is more attractive resource-wise, restoring from an in-use snapshot, and deletion
+  It checks moving Filesystem / Block volumes between nodes with a restore, that kubelet reports `kubelet_volume_stats_*` for a Filesystem PVC, returning to the node with the local copy even when the other node is more attractive resource-wise, restoring from an in-use snapshot, and deletion
 - **image**: builds the container images (driver and scheduler)
 
 ## Deploy
@@ -247,6 +248,10 @@ components:
 | `hermit_volume_generation{volume}` | Generation of the latest backup in S3 |
 
 The amount of unprotected data is bounded by `time() - hermit_volume_last_backup_timestamp_seconds`; the alert `HermitBackupStale` fires when it exceeds three intervals (at least 15 minutes).
+
+**Is a PVC filling up?** The node plugin implements `NodeGetVolumeStats`, so kubelet exports the standard `kubelet_volume_stats_capacity_bytes`, `kubelet_volume_stats_used_bytes`, `kubelet_volume_stats_available_bytes` and `kubelet_volume_stats_inodes*` for Filesystem PVCs (Block PVCs report capacity only).
+Alert on them as for any other CSI driver, e.g. `kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.1`.
+CSI spec v1.13 removed the alpha volume condition, so a fenced volume or failing backups are not reported through kubelet; use `hermit_volume_fenced` and `hermit_volume_backup_consecutive_failures` above.
 
 Other metrics:
 

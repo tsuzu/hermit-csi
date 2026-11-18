@@ -109,6 +109,7 @@ func (f *fakeVG) AddTag(_ context.Context, name, tag string) error {
 func (f *fakeVG) Get(_ context.Context, name string) (*lvm.LV, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.count("get")
 	if lv, ok := f.lvs[name]; ok {
 		c := *lv
 		return &c, nil
@@ -119,6 +120,7 @@ func (f *fakeVG) Get(_ context.Context, name string) (*lvm.LV, error) {
 func (f *fakeVG) List(context.Context) ([]lvm.LV, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.count("list")
 	var out []lvm.LV
 	for _, lv := range f.lvs {
 		out = append(out, *lv)

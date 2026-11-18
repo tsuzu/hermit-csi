@@ -398,6 +398,35 @@ check_metrics() {
   expect_eq "controller S3 errors" "$(metrics "$ctl" | grep -c '^hermit_s3_requests_total{.*result="error"' || true)" 0
 }
 
+# kubelet_stat NODE NAME PVC: kubelet's kubelet_volume_stats_NAME for PVC
+# (from NodeGetVolumeStats), through the API server's node proxy. Empty if
+# kubelet has not collected it yet.
+kubelet_stat() {
+  { "${K[@]}" get --raw "/api/v1/nodes/$1/proxy/metrics" | grep "^kubelet_volume_stats_$2{" |
+    grep -F "namespace=\"$NS\"" | grep -F "persistentvolumeclaim=\"$3\"" || true; } | awk 'NR == 1 {print $NF}'
+}
+
+# check_volume_stats NODE PVC MIN_USED: kubelet reports the filesystem usage
+# of the 1Gi PVC. kubelet refreshes volume stats about once a minute, so poll.
+check_volume_stats() {
+  local used="" cap="" inodes=""
+  for _ in $(seq 1 60); do
+    used=$(kubelet_stat "$1" used_bytes "$2")
+    [ -n "$used" ] && break
+    sleep 5
+  done
+  if [ -z "$used" ]; then
+    "${K[@]}" get --raw "/api/v1/nodes/$1/proxy/metrics" | grep '^kubelet_volume_stats_' || true
+    fail "kubelet on $1 reports no kubelet_volume_stats_used_bytes for $2"
+  fi
+  cap=$(kubelet_stat "$1" capacity_bytes "$2")
+  inodes=$(kubelet_stat "$1" inodes_used "$2")
+  awk -v u="$used" -v m="$3" -v c="$cap" 'BEGIN{exit !(u >= m && c >= u && c <= 1073741824 && c > 805306368)}' ||
+    fail "volume stats of $2 on $1: used '$used' (want >= $3), capacity '$cap' (want about 1Gi)"
+  awk -v i="$inodes" 'BEGIN{exit !(i > 0)}' || fail "volume stats of $2 on $1: inodes used '$inodes'"
+  echo "ok: kubelet on $1 reports $2 used=$used capacity=$cap inodes_used=$inodes"
+}
+
 # ------------------------------------------------------------------ test
 
 test_filesystem() {
@@ -474,6 +503,7 @@ test ! -e /data/c.txt'
 
   log "metrics on $n2"
   check_metrics "$n2" "$pv"
+  check_volume_stats "$n2" fs-data $((12 << 20)) # a.bin + b.bin
   delete_pod fs-r3 fs-data
 }
 
