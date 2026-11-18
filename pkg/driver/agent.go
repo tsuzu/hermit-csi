@@ -102,8 +102,14 @@ func (n *Node) doBackup(ctx context.Context, st *volState) (backupResult, error)
 		return r, err
 	}
 	if etag != st.ETag || base.Epoch != st.Epoch {
-		st.Fenced = true
-		return r, fmt.Errorf("%w (epoch %d -> %d)", ErrFenced, st.Epoch, base.Epoch)
+		ours, err := n.adoptOwnWrite(ctx, st, base, etag)
+		if err != nil {
+			return r, err
+		}
+		if !ours {
+			st.Fenced = true
+			return r, fmt.Errorf("%w (epoch %d -> %d)", ErrFenced, st.Epoch, base.Epoch)
+		}
 	}
 
 	newGen := base.Generation + 1
@@ -193,17 +199,60 @@ func (n *Node) doBackup(ctx context.Context, st *volState) (backupResult, error)
 	}
 
 	committed = true
-	if st.BaseSnap != "" && st.BaseSnap != snap {
-		if err := n.vg.Remove(ctx, st.BaseSnap); err != nil {
-			klog.ErrorS(err, "remove old base snapshot", "lv", st.BaseSnap)
-		}
-	}
+	n.setBase(ctx, st, snap)
+	r.m = next
+	return r, nil
+}
+
+// setBase makes snap the base snapshot of st and removes every other snapshot
+// of the volume: the previous base, and any left behind by a crash.
+func (n *Node) setBase(ctx context.Context, st *volState, snap string) {
 	if err := n.vg.AddTag(ctx, snap, lvm.TagBase); err != nil {
 		klog.ErrorS(err, "tag base snapshot", "lv", snap)
 	}
 	st.BaseSnap = snap
-	r.m = next
-	return r, nil
+	lvs, err := n.vg.List(ctx)
+	if err != nil {
+		klog.ErrorS(err, "list LVs to prune snapshots", "volume", st.VolumeID)
+		return
+	}
+	for _, lv := range lvs {
+		if lv.Name != snap && isSnapOf(st.VolumeID, lv.Name) {
+			if err := n.vg.Remove(ctx, lv.Name); err != nil {
+				klog.ErrorS(err, "remove stale snapshot", "lv", lv.Name)
+			}
+		}
+	}
+}
+
+// adoptOwnWrite recognizes a latest.json that this node wrote but never
+// recorded in its state file: the process died between the manifest PUT and
+// the state save, or a PUT reported as failed had in fact been applied. Such
+// a manifest has our epoch and is exactly one generation ahead. Only the node
+// granted an epoch writes with it (the controller bumps the epoch whenever it
+// fences), so the write is ours; treating it as foreign would fence the volume
+// and stop its backups for good.
+//
+// On a match st catches up with m. If the snapshot that m was taken from
+// survived, it becomes the base; otherwise the old base stays, which is still
+// correct: everything that changed since m's snapshot also changed since the
+// old base, so the next diff is a superset.
+func (n *Node) adoptOwnWrite(ctx context.Context, st *volState, m *manifest.Manifest, etag string) (bool, error) {
+	if m.Epoch != st.Epoch || m.Generation != st.Generation+1 {
+		return false, nil
+	}
+	snap := snapName(st.VolumeID, m.Generation)
+	lv, err := n.vg.Get(ctx, snap)
+	if err != nil {
+		return false, err
+	}
+	klog.InfoS("latest.json is our own unrecorded write, catching up", "volume", st.VolumeID,
+		"generation", m.Generation, "snapshotKept", lv != nil)
+	st.ETag, st.Generation = etag, m.Generation
+	if lv != nil {
+		n.setBase(ctx, st, snap)
+	}
+	return true, nil
 }
 
 // takeSnapshot creates a thin snapshot, freezing a mounted filesystem around

@@ -25,6 +25,8 @@ snapshots/<id>.json.gz       manifest as of a VolumeSnapshot (immutable)
 
 There are no full uploads. The first backup reads only the allocated blocks (`thin_dump`) and skips zero chunks.
 If the base snapshot is lost, the node rereads the local volume and uploads only the chunks whose hash changed.
+Each volume keeps exactly one local snapshot (the base); a successful backup removes any others.
+If the node dies between writing `latest.json` and saving its local state (or a PUT that looked failed was applied), the next backup or re-stage sees `latest.json` one generation ahead with its own epoch, recognizes the write as its own and catches up, instead of fencing itself or restoring over the local LV.
 
 Consistency:
 - Filesystem mode runs `fsfreeze` before each snapshot, so backups are filesystem-consistent
