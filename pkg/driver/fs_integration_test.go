@@ -249,6 +249,40 @@ func (c *fsCluster) backup(m *fsMount) {
 	}
 }
 
+// stats calls NodeGetVolumeStats on the pod-visible mount, as kubelet does,
+// and checks the usage is consistent with a filesystem of about c.size.
+func (c *fsCluster) stats(m *fsMount) (b, in *csi.VolumeUsage) {
+	c.t.Helper()
+	resp, err := c.nodes[m.node].NodeGetVolumeStats(context.Background(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId: m.vol, VolumePath: m.target, StagingTargetPath: m.staging,
+	})
+	if err != nil {
+		c.t.Fatalf("NodeGetVolumeStats %s on %s: %v", m.vol, m.node, err)
+	}
+	for _, u := range resp.GetUsage() {
+		switch u.GetUnit() {
+		case csi.VolumeUsage_BYTES:
+			b = u
+		case csi.VolumeUsage_INODES:
+			in = u
+		}
+	}
+	if b == nil || in == nil {
+		c.t.Fatalf("%s stats lack BYTES or INODES: %v", c.fsType, resp.GetUsage())
+	}
+	// The filesystem metadata (journal, inode tables, log) is not counted.
+	if b.Total > c.size || b.Total < c.size*3/4 {
+		c.t.Fatalf("%s total = %d bytes, want about the volume size %d", c.fsType, b.Total, c.size)
+	}
+	if b.Used < 0 || b.Available <= 0 || b.Used+b.Available > b.Total {
+		c.t.Fatalf("%s bytes inconsistent: %v", c.fsType, b)
+	}
+	if in.Total <= 0 || in.Used <= 0 || in.Used > in.Total {
+		c.t.Fatalf("%s inodes inconsistent: %v", c.fsType, in)
+	}
+	return b, in
+}
+
 func changedChunks(a, b []string) int {
 	n := 0
 	for i := range b {
@@ -276,8 +310,20 @@ func runFilesystemScenario(t *testing.T, c *fsCluster) {
 
 	// First stage formats the empty volume.
 	a := c.attach(vol, "node-a")
+	empty, emptyInodes := c.stats(a)
 	files["big.bin"] = c.writeFile(a, "big.bin", 3*testChunk+123, 1, true)
 	files["dir/small.txt"] = c.writeFile(a, "dir/small.txt", 100, 2, true)
+	// kubelet_volume_stats_*: used space and inodes grow with the files.
+	written, writtenInodes := c.stats(a)
+	if grown := written.Used - empty.Used; grown < 3*testChunk {
+		t.Fatalf("%s used grew by %d bytes after writing %d, want at least %d", c.fsType, grown, 3*testChunk+223, 3*testChunk)
+	}
+	if written.Available >= empty.Available || written.Total != empty.Total {
+		t.Fatalf("%s stats after write = %v, before = %v", c.fsType, written, empty)
+	}
+	if writtenInodes.Used < emptyInodes.Used+3 { // big.bin, dir, dir/small.txt
+		t.Fatalf("%s inodes used %d -> %d, want +3", c.fsType, emptyInodes.Used, writtenInodes.Used)
+	}
 	c.backup(a)
 
 	// Written but never fsynced: only fsfreeze flushes it before the snapshot.
@@ -288,6 +334,8 @@ func runFilesystemScenario(t *testing.T, c *fsCluster) {
 	// and its unstage (once it comes back) is fenced and uploads nothing.
 	c.writeFile(a, "lost.bin", 4096, 4, true)
 	c.forceDetach(vol, "node-a")
+	// Until it is unstaged, the fenced node still reports the mounted fs.
+	c.stats(a)
 	gen := c.latest(vol).Generation
 	c.unmount(a)
 	if got := c.latest(vol).Generation; got != gen {

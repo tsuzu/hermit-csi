@@ -124,11 +124,16 @@ func isSnapOf(vol, lv string) bool {
 }
 
 func (n *Node) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
-	return &csi.NodeGetCapabilitiesResponse{Capabilities: []*csi.NodeServiceCapability{{
-		Type: &csi.NodeServiceCapability_Rpc{Rpc: &csi.NodeServiceCapability_RPC{
-			Type: csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
-		}},
-	}}}, nil
+	var caps []*csi.NodeServiceCapability
+	for _, c := range []csi.NodeServiceCapability_RPC_Type{
+		csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
+		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+	} {
+		caps = append(caps, &csi.NodeServiceCapability{Type: &csi.NodeServiceCapability_Rpc{
+			Rpc: &csi.NodeServiceCapability_RPC{Type: c},
+		}})
+	}
+	return &csi.NodeGetCapabilitiesResponse{Capabilities: caps}, nil
 }
 
 func (n *Node) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
