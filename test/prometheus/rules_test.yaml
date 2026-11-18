@@ -80,3 +80,23 @@ tests:
               description: >-
                 Another node took over vol (e.g. after a force detach), but it is still staged on node-a.
                 Writes there are no longer backed up and will be lost; stop the pod still using it on that node.
+  - interval: 1h
+    input_series:
+      - series: hermit_fstrim_total{pod="node-a",result="failure"}
+        values: 0 0 1 1x60
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: HermitFstrimFailing
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: HermitFstrimFailing
+        exp_alerts:
+          - exp_labels: {severity: info, pod: node-a, result: failure}
+            exp_annotations:
+              summary: fstrim of a filesystem volume failed on node-a
+              description: >-
+                Blocks of deleted files are not returned to the thin pool, which keeps filling up;
+                see the node plugin logs ("fstrim failed").
+      - eval_time: 60h # no new failure for 2 days
+        alertname: HermitFstrimFailing
+        exp_alerts: []

@@ -85,6 +85,9 @@ type Config struct {
 	VG             *lvm.VG
 	StateDir       string
 	BackupInterval time.Duration
+	// TrimInterval is how often fstrim runs on each mounted filesystem
+	// volume, so blocks of deleted files go back to the thin pool (0 = off).
+	TrimInterval   time.Duration
 	AgentListen    string // e.g. ":9810"
 	AgentAdvertise string // e.g. "10.0.0.12:9810" (pod IP)
 

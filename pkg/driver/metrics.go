@@ -56,6 +56,8 @@ type metrics struct {
 	restores       *prometheus.CounterVec
 	restoreDur     prometheus.Histogram
 	restoredBytes  prometheus.Counter
+	trims          *prometheus.CounterVec
+	trimmedBytes   prometheus.Counter
 
 	// controller
 	gcRuns        *prometheus.CounterVec
@@ -133,6 +135,14 @@ func newMetrics(mode, version string) *metrics {
 		m.restoredBytes = prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: metricsNamespace, Name: "restore_bytes_total", Help: "Non-zero bytes written by successful restores.",
 		})
+		m.trims = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricsNamespace, Name: "fstrim_total",
+			Help: "Periodic fstrim runs on mounted filesystem volumes, by result (success, failure).",
+		}, []string{"result"})
+		m.trimmedBytes = prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: metricsNamespace, Name: "fstrim_trimmed_bytes_total",
+			Help: "Bytes fstrim reported as discarded (returned to the thin pool once the next backup replaces the base snapshot).",
+		})
 		f(m.backups)
 		f(m.backupDur)
 		f(m.uploadedBytes)
@@ -143,6 +153,8 @@ func newMetrics(mode, version string) *metrics {
 		f(m.restores)
 		f(m.restoreDur)
 		f(m.restoredBytes)
+		f(m.trims)
+		f(m.trimmedBytes)
 	case "controller":
 		m.gcRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace, Name: "gc_runs_total", Help: "Chunk GC runs, by result (success, failure).",

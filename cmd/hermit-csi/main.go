@@ -44,6 +44,7 @@ func main() {
 		pool       = flag.String("thin-pool", "pool", "LVM thin pool in the VG (node)")
 		stateDir   = flag.String("state-dir", "/var/lib/hermit", "local state directory (node)")
 		interval   = flag.Duration("backup-interval", 5*time.Minute, "default periodic backup interval (node); the StorageClass parameter backupInterval overrides it per volume, 0 disables it for volumes without one")
+		trimEvery  = flag.Duration("fstrim-interval", 24*time.Hour, "how often to fstrim each mounted filesystem volume, returning blocks of deleted files to the thin pool (node); 0 disables it")
 		agentAddr  = flag.String("agent-listen", ":9810", "snapshot agent listen address (node)")
 		advertise  = flag.String("agent-advertise", "", "snapshot agent address the controller should use, host:port (node)")
 		metrics    = flag.String("metrics-listen", ":9811", "Prometheus metrics listen address (/metrics); empty disables it")
@@ -87,6 +88,7 @@ func main() {
 		VG:             &lvm.VG{Name: *vgName, Pool: *pool, Timeout: *lvmTimeout},
 		StateDir:       *stateDir,
 		BackupInterval: *interval,
+		TrimInterval:   *trimEvery,
 		AgentListen:    *agentAddr,
 		AgentAdvertise: *advertise,
 		MetricsListen:  *metrics,

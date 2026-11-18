@@ -310,6 +310,7 @@ func (n *Node) backupLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		n.backupDue(ctx)
+		n.trimDue(ctx)
 		if n.now().Sub(lastCleanup) >= orphanCleanupInterval {
 			n.cleanupOrphans(ctx)
 			lastCleanup = n.now()
@@ -373,6 +374,62 @@ func (n *Node) backupDue(ctx context.Context) {
 			klog.ErrorS(err, "periodic backup failed", "volume", vol, "interval", interval)
 		}
 	}
+}
+
+// trimDue runs fstrim on every mounted filesystem volume whose last trim is
+// at least --fstrim-interval old. Filesystems are mounted without the discard
+// option, so without this, blocks of deleted files stay allocated in the thin
+// pool forever and keep being backed up and restored. The trimmed blocks are
+// freed in the pool once the next backup replaces the base snapshot, which
+// also records them as zero chunks in latest.json.
+func (n *Node) trimDue(ctx context.Context) {
+	interval := n.cfg.TrimInterval
+	if interval <= 0 || n.trim == nil {
+		return
+	}
+	vols, err := n.states.list()
+	if err != nil {
+		return
+	}
+	for _, vol := range vols {
+		if ctx.Err() != nil {
+			return
+		}
+		n.trimVolume(ctx, vol, interval)
+	}
+}
+
+func (n *Node) trimVolume(ctx context.Context, vol string, interval time.Duration) {
+	// Under the volume lock: never overlaps the fsfreeze of a backup.
+	defer n.locks.lock(vol)()
+	st, err := n.states.load(vol)
+	if err != nil || st == nil || !st.Staged || st.Block || st.Fenced || st.Staging == "" {
+		return
+	}
+	now := n.now()
+	if now.Sub(st.LastTrim) < interval {
+		return
+	}
+	start := time.Now()
+	trimmed, err := n.trim(ctx, st.Staging)
+	if ctx.Err() != nil {
+		return // shutting down: try again after the restart
+	}
+	// Also on failure: retry one interval later rather than on every tick.
+	st.LastTrim = now
+	if serr := n.states.save(st); serr != nil {
+		klog.ErrorS(serr, "save state", "volume", vol)
+	}
+	if err != nil {
+		n.m.trims.WithLabelValues(resultFailure).Inc()
+		klog.ErrorS(err, "fstrim failed", "volume", vol, "path", st.Staging)
+		return
+	}
+	n.m.trims.WithLabelValues(resultSuccess).Inc()
+	if trimmed > 0 {
+		n.m.trimmedBytes.Add(float64(trimmed))
+	}
+	klog.InfoS("fstrim done", "volume", vol, "trimmedBytes", trimmed, "took", time.Since(start).Round(time.Millisecond))
 }
 
 // cleanupOrphans removes local copies that can never be reused: the volume was
