@@ -20,7 +20,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	mount "k8s.io/mount-utils"
@@ -87,7 +89,7 @@ type fsCluster struct {
 
 func realFSCluster(t *testing.T, fsType string, size int64) *fsCluster {
 	t.Helper()
-	for _, bin := range []string{"mkfs." + fsType, "fsfreeze", "blkid"} {
+	for _, bin := range []string{"mkfs." + fsType, "fsfreeze", "fstrim", "blkid"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Skipf("%s not installed", bin)
 		}
@@ -310,6 +312,32 @@ func runFilesystemScenario(t *testing.T, c *fsCluster) {
 	} else {
 		t.Logf("small change on %s: %d of %d used chunks changed", c.fsType, ch, used)
 	}
+
+	// Deleting a file does not free its blocks in the thin pool (no discard
+	// mount option); the periodic fstrim does, and the next backup drops the
+	// trimmed chunks from latest.json.
+	if err := os.Remove(filepath.Join(b.target, "big.bin")); err != nil {
+		t.Fatal(err)
+	}
+	files["big.bin"] = nil
+	syscall.Sync()
+	nb := c.nodes["node-b"]
+	nb.cfg.TrimInterval = time.Hour
+	nb.trimDue(ctx)
+	nb.cfg.TrimInterval = 0
+	if got := mustMetric(t, nb.m.reg, "hermit_fstrim_total", map[string]string{"result": "success"}); got != 1 {
+		t.Fatalf("fstrim runs = %v, want 1", got)
+	}
+	trimmed := mustMetric(t, nb.m.reg, "hermit_fstrim_trimmed_bytes_total", nil)
+	before = c.latest(vol)
+	c.backup(b)
+	after = c.latest(vol)
+	if u0, u1 := usedChunks(before.Chunks), usedChunks(after.Chunks); u1 > u0-2 {
+		t.Fatalf("after deleting a %d-chunk file and fstrim (%v bytes trimmed): %d -> %d used chunks", 3, trimmed, u0, u1)
+	} else {
+		t.Logf("fstrim on %s: %v bytes trimmed, used chunks %d -> %d", c.fsType, trimmed, u0, u1)
+	}
+	c.expectFiles(b, files)
 
 	// In-use snapshot: the node agent freezes the mounted filesystem.
 	files["at-snap.bin"] = c.writeFile(b, "at-snap.bin", testChunk, 6, false)

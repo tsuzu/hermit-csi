@@ -29,6 +29,8 @@ type volState struct {
 	LastBackup time.Time `json:"lastBackup,omitzero"`
 	// BackupFailures counts failed backups since the last successful one.
 	BackupFailures int `json:"backupFailures,omitempty"`
+	// LastTrim is when fstrim last ran on the mounted filesystem.
+	LastTrim time.Time `json:"lastTrim,omitzero"`
 }
 
 type stateStore struct{ dir string }

@@ -380,6 +380,16 @@ check_metrics() {
   local snaps; snaps=$(metric_value "$pod" 'hermit_backups_total{result="success",trigger="snapshot"}')
   [ "${snaps:-0}" -ge 1 ] || fail "no successful snapshot backup counted on $1"
   echo "ok: snapshot backups on $1 = $snaps"
+  # A staged filesystem is trimmed on the first tick after staging.
+  local trims i
+  for i in $(seq 30); do
+    trims=$(metric_value "$pod" 'hermit_fstrim_total{result="success"}')
+    [ "${trims:-0}" -ge 1 ] && break
+    sleep 2
+  done
+  [ "${trims:-0}" -ge 1 ] || { metrics "$pod" | grep '^hermit_fstrim' || true; fail "no successful fstrim counted on $1"; }
+  expect_eq "fstrim failures on $1" "$(metric_value "$pod" 'hermit_fstrim_total{result="failure"}')" ""
+  echo "ok: fstrim runs on $1 = $trims"
   local pool; pool=$(metric_value "$pod" "hermit_thin_pool_data_usage_ratio{")
   awk -v p="$pool" 'BEGIN{exit !(p > 0 && p < 1)}' || fail "thin pool usage on $1 = '$pool'"
   echo "ok: thin pool usage on $1 = $pool"

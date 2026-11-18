@@ -30,6 +30,7 @@ spec:
             - --thin-pool=pool
             - --state-dir=/var/lib/hermit
             - --backup-interval=5m # default; StorageClass parameter backupInterval overrides it
+            - --fstrim-interval=24h # default; returns blocks of deleted files to the thin pool
             - --agent-listen=:9810
             - --agent-advertise=$(POD_IP):9810
             - --metrics-listen=:9811

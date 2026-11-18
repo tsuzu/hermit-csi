@@ -36,6 +36,10 @@ Consistency:
 The periodic backup interval can be set per volume with the StorageClass parameter `parameters.backupInterval` (Go duration, at least 10s).
 Volumes without it use the node's `--backup-interval` (default 5m; `0` disables periodic backups for them).
 
+Filesystems are mounted without the `discard` option, so deleting a file does not free its blocks in the thin pool.
+The node plugin therefore runs `fstrim` on every mounted filesystem volume every `--fstrim-interval` (default 24h, `0` disables it; the first run is right after staging).
+The trimmed blocks are freed once the next backup replaces the base snapshot, and that backup records them as zero chunks, so deleted data is no longer kept in S3 or restored.
+
 ```yaml
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -247,12 +251,13 @@ Other metrics:
 - Backups: `hermit_backups_total{trigger, result}` (trigger `periodic` / `snapshot` / `unstage`, result `success` / `unchanged` / `fenced` / `failure`), `hermit_backup_duration_seconds`, `hermit_backup_uploaded_bytes_total`, `hermit_backup_uploaded_chunks_total`, `hermit_backup_changed_chunks_total`, `hermit_backup_full_rescans_total` (no base snapshot, all allocated blocks were read)
 - Stage and restore: `hermit_stages_total{source="local|restore"}` (how often the scheduler plugin avoided a restore), `hermit_restores_total{result}`, `hermit_restore_duration_seconds`, `hermit_restore_bytes_total`
 - Thin pool: `hermit_thin_pool_data_usage_ratio`, `hermit_thin_pool_metadata_usage_ratio`, `hermit_thin_pool_size_bytes` (read with `lvs` on each scrape)
+- fstrim: `hermit_fstrim_total{result}`, `hermit_fstrim_trimmed_bytes_total`
 - S3: `hermit_s3_requests_total{operation, result}` (`ok` / `not_found` / `precondition_failed` / `canceled` / `error`), `hermit_s3_request_duration_seconds`
 - CSI: `hermit_csi_operations_total{method, code}`, `hermit_csi_operation_duration_seconds`
 - Chunk GC (controller): `hermit_gc_runs_total{result}`, `hermit_gc_deleted_chunks_total`, `hermit_gc_last_success_timestamp_seconds`, `hermit_gc_duration_seconds`
 - `hermit_build_info{version, mode}`, plus the standard Go and process metrics
 
-Alerts in the PrometheusRule: `HermitBackupStale`, `HermitBackupFailing` (3 failures in a row), `HermitVolumeFenced`, `HermitThinPoolDataFilling` (80%), `HermitThinPoolDataFull` (95%), `HermitThinPoolMetadataFilling` (80%), `HermitS3Errors`, `HermitRestoreFailing`, `HermitChunkGCStale` and `HermitMetricsDown`.
+Alerts in the PrometheusRule: `HermitBackupStale`, `HermitBackupFailing` (3 failures in a row), `HermitVolumeFenced`, `HermitThinPoolDataFilling` (80%), `HermitThinPoolDataFull` (95%), `HermitThinPoolMetadataFilling` (80%), `HermitS3Errors`, `HermitRestoreFailing`, `HermitFstrimFailing`, `HermitChunkGCStale` and `HermitMetricsDown`.
 They are unit-tested with `promtool test rules` (`test/prometheus/`).
 
 ## Known limitations / TODO

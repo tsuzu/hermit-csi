@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,7 @@ type Node struct {
 	mounter *mount.SafeFormatAndMount
 	locks   keyLock
 	freeze  func(ctx context.Context, path string, freeze bool) error
+	trim    func(ctx context.Context, path string) (int64, error)
 	now     func() time.Time
 	m       *metrics
 
@@ -94,6 +96,7 @@ func newNode(cfg Config, vg thinVG) *Node {
 		states:  stateStore{dir: cfg.StateDir},
 		mounter: &mount.SafeFormatAndMount{Interface: mount.New(""), Exec: utilexec.New()},
 		freeze:  fsfreeze,
+		trim:    fstrim,
 		now:     time.Now,
 		ops:     map[string]*op{},
 
@@ -110,6 +113,31 @@ func fsfreeze(ctx context.Context, path string, freeze bool) error {
 	}
 	_, err := lvm.DefaultRunner(ctx, "fsfreeze", flag, path)
 	return err
+}
+
+var trimmedRe = regexp.MustCompile(`\((\d+) bytes\) trimmed`)
+
+// fstrim discards the unused blocks of a mounted filesystem and returns how
+// many bytes it reported as trimmed (-1 if the output could not be parsed).
+func fstrim(ctx context.Context, path string) (int64, error) {
+	out, err := lvm.DefaultRunner(ctx, "fstrim", "-v", path)
+	if err != nil {
+		return 0, err
+	}
+	return parseTrimmed(string(out)), nil
+}
+
+// parseTrimmed reads "/mnt: 1.2 GiB (1288490188 bytes) trimmed".
+func parseTrimmed(out string) int64 {
+	m := trimmedRe.FindStringSubmatch(out)
+	if m == nil {
+		return -1
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 func snapName(vol string, gen int64) string { return vol + "-b" + strconv.FormatInt(gen, 10) }

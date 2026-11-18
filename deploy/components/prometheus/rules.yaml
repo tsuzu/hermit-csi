@@ -73,6 +73,14 @@ spec:
           annotations:
             summary: Restoring a volume from S3 failed on {{ $labels.pod }}
             description: Pods using the volume cannot start until the restore succeeds; see the node plugin logs.
+        - alert: HermitFstrimFailing
+          expr: increase(hermit_fstrim_total{result="failure"}[2d]) > 0
+          labels: {severity: info}
+          annotations:
+            summary: fstrim of a filesystem volume failed on {{ $labels.pod }}
+            description: >-
+              Blocks of deleted files are not returned to the thin pool, which keeps filling up;
+              see the node plugin logs ("fstrim failed").
         - alert: HermitChunkGCStale
           expr: time() - hermit_gc_last_success_timestamp_seconds > 4 * 3600
           for: 15m
