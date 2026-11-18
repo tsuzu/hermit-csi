@@ -236,7 +236,7 @@ func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, s
 	if err != nil {
 		return err
 	}
-	reuse, err := n.canReuse(ctx, st, m)
+	reuse, err := n.canReuse(ctx, st, m, etag)
 	if err != nil {
 		return err
 	}
@@ -279,9 +279,14 @@ func (n *Node) stage(ctx context.Context, vol string, epoch int64, block bool, s
 	return nil
 }
 
-func (n *Node) canReuse(ctx context.Context, st *volState, m *manifest.Manifest) (bool, error) {
-	if st == nil || st.Generation != m.Generation || st.BaseSnap == "" {
+func (n *Node) canReuse(ctx context.Context, st *volState, m *manifest.Manifest, etag string) (bool, error) {
+	if st == nil || st.BaseSnap == "" {
 		return false, nil
+	}
+	if st.Generation != m.Generation {
+		if ours, err := n.adoptOwnWrite(ctx, st, m, etag); err != nil || !ours {
+			return false, err
+		}
 	}
 	lv, err := n.vg.Get(ctx, m.VolumeID)
 	if err != nil || lv == nil || lv.Size != m.SizeBytes {
