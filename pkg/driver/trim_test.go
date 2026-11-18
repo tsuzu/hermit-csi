@@ -11,7 +11,7 @@ func TestParseTrimmed(t *testing.T) {
 	for out, want := range map[string]int64{
 		"/var/lib/kubelet/x/globalmount: 5.2 GiB (5583457280 bytes) trimmed\n": 5583457280,
 		"/mnt: 0 B (0 bytes) trimmed\n":                                        0,
-		"unexpected": -1,
+		"unexpected":                                                           -1,
 	} {
 		if got := parseTrimmed(out); got != want {
 			t.Errorf("parseTrimmed(%q) = %d, want %d", out, got, want)
@@ -81,7 +81,7 @@ func TestPeriodicFstrim(t *testing.T) {
 
 	fail = errors.New("injected fstrim failure")
 	tick(48*time.Hour, "/staging/fs")
-	tick(49*time.Hour) // a failure is retried one interval later, not every tick
+	tick(49 * time.Hour) // a failure is retried one interval later, not every tick
 	fail = nil
 	tick(72*time.Hour, "/staging/fs")
 
