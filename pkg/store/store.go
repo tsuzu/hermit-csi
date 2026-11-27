@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -49,7 +50,16 @@ type Config struct {
 	// STSEndpoint overrides the STS endpoint (S3-compatible stores with their
 	// own STS, such as MinIO, or a VPC endpoint). Default: the regional AWS one.
 	STSEndpoint string
+
+	// Timeout bounds a single HTTP request (one SDK attempt; the SDK may
+	// retry on top of it). Without it a half-dead endpoint — one that
+	// accepts TCP but never answers — blocks a call forever, which once
+	// wedged a node's unstage path for 21h. 0 selects DefaultTimeout.
+	Timeout time.Duration
 }
+
+// DefaultTimeout bounds one S3 HTTP request when Config.Timeout is unset.
+const DefaultTimeout = 60 * time.Second
 
 // Store is an S3 bucket (plus optional prefix).
 type Store struct {
@@ -65,10 +75,27 @@ type ObjectInfo struct {
 	Size         int64
 }
 
+// timeoutClient returns an SDK HTTP client whose every request is
+// bounded: the timeout covers a request from dialing to the last body
+// byte read, so no single S3 or STS call can block forever even if the
+// peer stops answering mid-transfer. It must be a BuildableClient (the
+// SDK's own default): LoadDefaultConfig applies settings such as a
+// custom CA bundle (AWS_CA_BUNDLE) through it and rejects a plain
+// *http.Client in that configuration.
+func timeoutClient(timeout time.Duration) aws.HTTPClient {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	return awshttp.NewBuildableClient().WithTimeout(timeout)
+}
+
 // New creates a Store using the default AWS credential chain
 // (env vars, IRSA, instance profile, ...).
 func New(ctx context.Context, cfg Config) (*Store, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithHTTPClient(timeoutClient(cfg.Timeout)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
