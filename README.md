@@ -257,6 +257,7 @@ Other metrics:
 
 - Backups: `hermit_backups_total{trigger, result}` (trigger `periodic` / `snapshot` / `unstage`, result `success` / `unchanged` / `fenced` / `failure`), `hermit_backup_duration_seconds`, `hermit_backup_uploaded_bytes_total`, `hermit_backup_uploaded_chunks_total`, `hermit_backup_changed_chunks_total`, `hermit_backup_full_rescans_total` (no base snapshot, all allocated blocks were read)
 - Stage and restore: `hermit_stages_total{source="local|restore"}` (how often the scheduler plugin avoided a restore), `hermit_restores_total{result}`, `hermit_restore_duration_seconds`, `hermit_restore_bytes_total`
+- Operation lifetime: `hermit_operation_in_flight_age_seconds{volume, operation}` (age of the detached stage/unstage currently in flight; the series exists only while one runs), `hermit_operations_expired_total{operation}` (operations abandoned at `--op-timeout`)
 - Thin pool: `hermit_thin_pool_data_usage_ratio`, `hermit_thin_pool_metadata_usage_ratio`, `hermit_thin_pool_size_bytes` (read with `lvs` on each scrape)
 - fstrim: `hermit_fstrim_total{result}`, `hermit_fstrim_trimmed_bytes_total`
 - S3: `hermit_s3_requests_total{operation, result}` (`ok` / `not_found` / `precondition_failed` / `canceled` / `error`), `hermit_s3_request_duration_seconds`
@@ -264,7 +265,7 @@ Other metrics:
 - Chunk GC (controller): `hermit_gc_runs_total{result}`, `hermit_gc_deleted_chunks_total`, `hermit_gc_last_success_timestamp_seconds`, `hermit_gc_duration_seconds`
 - `hermit_build_info{version, mode}`, plus the standard Go and process metrics
 
-Alerts in the PrometheusRule: `HermitBackupStale`, `HermitBackupFailing` (3 failures in a row), `HermitVolumeFenced`, `HermitThinPoolDataFilling` (80%), `HermitThinPoolDataFull` (95%), `HermitThinPoolMetadataFilling` (80%), `HermitS3Errors`, `HermitRestoreFailing`, `HermitFstrimFailing`, `HermitChunkGCStale` and `HermitMetricsDown`.
+Alerts in the PrometheusRule: `HermitBackupStale`, `HermitBackupFailing` (3 failures in a row), `HermitOperationStuck` (a stage/unstage in flight for 15m), `HermitUnstageBackupFailing`, `HermitVolumeFenced`, `HermitThinPoolDataFilling` (80%), `HermitThinPoolDataFull` (95%), `HermitThinPoolMetadataFilling` (80%), `HermitS3Errors`, `HermitRestoreFailing`, `HermitFstrimFailing`, `HermitChunkGCStale` and `HermitMetricsDown`.
 They are unit-tested with `promtool test rules` (`test/prometheus/`).
 
 ## Known limitations / TODO

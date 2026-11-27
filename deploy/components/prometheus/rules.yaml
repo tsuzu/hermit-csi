@@ -29,6 +29,32 @@ spec:
             description: >-
               {{ $value }} backups in a row of {{ $labels.volume }} on {{ $labels.pod }} failed; see the
               node plugin logs ("periodic backup failed").
+        # A stage/unstage operation still in flight after 15m is stuck, not
+        # slow: operations are abandoned at --op-timeout (default 30m), and
+        # an unstage once wedged for 21h without anyone noticing.
+        - alert: HermitOperationStuck
+          expr: hermit_operation_in_flight_age_seconds > 900
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: A {{ $labels.operation }} of volume {{ $labels.volume }} has been in flight for {{ $value | humanizeDuration }} on {{ $labels.pod }}
+            description: >-
+              The operation should have finished or been abandoned at --op-timeout. Check the S3
+              endpoint and the node plugin logs ("operation exceeded its maximum lifetime").
+        # The final backup at unstage failing means volumes cannot leave
+        # the node: kubelet retries the unstage forever. This needs its own
+        # alert because the volume state — and with it the
+        # consecutive-failures gauge behind HermitBackupFailing — is only
+        # saved after a successful final backup.
+        - alert: HermitUnstageBackupFailing
+          expr: increase(hermit_backups_total{trigger="unstage", result="failure"}[30m]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: The final backup at unstage is failing on {{ $labels.pod }}
+            description: >-
+              Volumes cannot finish unstaging from {{ $labels.pod }} until their final backup to S3
+              succeeds; pods leaving the node hang in Terminating. Check the S3 endpoint and the
+              node plugin logs ("final backup of").
         - alert: HermitVolumeFenced
           expr: hermit_volume_fenced == 1
           for: 15m
