@@ -53,6 +53,7 @@ type metrics struct {
 	changedChunks  prometheus.Counter
 	rescans        prometheus.Counter
 	stages         *prometheus.CounterVec
+	opsExpired     *prometheus.CounterVec
 	restores       *prometheus.CounterVec
 	restoreDur     prometheus.Histogram
 	restoredBytes  prometheus.Counter
@@ -126,6 +127,10 @@ func newMetrics(mode, version string) *metrics {
 			Namespace: metricsNamespace, Name: "stages_total",
 			Help: "Successful NodeStage operations, by data source: local (the local copy was current) or restore (downloaded from S3).",
 		}, []string{"source"})
+		m.opsExpired = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: metricsNamespace, Name: "operations_expired_total",
+			Help: "Detached stage/unstage operations abandoned after exceeding --op-timeout instead of finishing.",
+		}, []string{"operation"})
 		m.restores = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace, Name: "restores_total", Help: "Restores from S3, by result (success, failure).",
 		}, []string{"result"})
@@ -150,6 +155,7 @@ func newMetrics(mode, version string) *metrics {
 		f(m.changedChunks)
 		f(m.rescans)
 		f(m.stages)
+		f(m.opsExpired)
 		f(m.restores)
 		f(m.restoreDur)
 		f(m.restoredBytes)
@@ -316,6 +322,9 @@ var (
 	descFenced = prometheus.NewDesc(metricsNamespace+"_volume_fenced",
 		"1 if another node took over the volume while it is still staged here: this node no longer backs it up.",
 		[]string{"volume"}, nil)
+	descOpAge = prometheus.NewDesc(metricsNamespace+"_operation_in_flight_age_seconds",
+		"Age of the detached stage/unstage operation currently in flight on a volume. Series exist only while an operation runs; operations are abandoned at --op-timeout, so an age approaching it means the operation is stuck.",
+		[]string{"volume", "operation"}, nil)
 	descPoolData = prometheus.NewDesc(metricsNamespace+"_thin_pool_data_usage_ratio",
 		"Fraction of the thin pool's data space in use.", []string{"vg", "pool"}, nil)
 	descPoolMeta = prometheus.NewDesc(metricsNamespace+"_thin_pool_metadata_usage_ratio",
@@ -330,7 +339,7 @@ var (
 type nodeCollector struct{ n *Node }
 
 func (c nodeCollector) Describe(ch chan<- *prometheus.Desc) {
-	for _, d := range []*prometheus.Desc{descLastBackup, descInterval, descFailures, descGeneration, descFenced, descPoolData, descPoolMeta, descPoolSize} {
+	for _, d := range []*prometheus.Desc{descLastBackup, descInterval, descFailures, descGeneration, descFenced, descOpAge, descPoolData, descPoolMeta, descPoolSize} {
 		ch <- d
 	}
 }
@@ -360,6 +369,23 @@ func (c nodeCollector) Collect(ch chan<- prometheus.Metric) {
 			fenced = 1
 		}
 		g(descFenced, fenced)
+	}
+
+	// In-flight detached operations, snapshotted under opMu. Their age is
+	// the earliest observable sign of a wedged stage/unstage.
+	n.opMu.Lock()
+	type inFlight struct {
+		vol, kind string
+		started   time.Time
+	}
+	var ops []inFlight
+	for vol, o := range n.ops {
+		ops = append(ops, inFlight{vol, o.kind, o.started})
+	}
+	n.opMu.Unlock()
+	now := time.Now() // op start times are real-clock (see runOp)
+	for _, o := range ops {
+		ch <- prometheus.MustNewConstMetric(descOpAge, prometheus.GaugeValue, now.Sub(o.started).Seconds(), o.vol, o.kind)
 	}
 
 	if pu, ok := n.vg.(poolUsager); ok {

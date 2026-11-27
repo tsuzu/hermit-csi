@@ -69,9 +69,19 @@ type Node struct {
 	lastBackup map[string]time.Time
 }
 
+// Operation kinds, used as metric labels and in logs.
+const (
+	opStage   = "stage"
+	opUnstage = "unstage"
+)
+
 type op struct {
-	done chan struct{}
-	err  error
+	done    chan struct{}
+	err     error
+	kind    string
+	started time.Time
+	cancel  context.CancelFunc
+	expired bool // the lifetime cap fired before fn returned
 }
 
 func NewNode(cfg Config) (*Node, error) {
@@ -171,29 +181,79 @@ func (n *Node) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeG
 
 // ---------------------------------------------------------------- stage
 
+func (n *Node) opTimeout() time.Duration {
+	if n.cfg.OpTimeout > 0 {
+		return n.cfg.OpTimeout
+	}
+	return DefaultOpTimeout
+}
+
 // runOp runs fn detached from the RPC context so a long restore survives
 // kubelet timeouts. Callers that time out get Aborted and simply retry; a
 // retry while fn is still running waits for the same operation.
-func (n *Node) runOp(ctx context.Context, vol string, fn func(context.Context) error) error {
+//
+// The detachment is bounded by --op-timeout: fn runs under a context with
+// that deadline, and a caller still waiting when it passes fails the
+// operation (DeadlineExceeded) instead of letting it run on forever
+// behind an endless chain of Aborted retries — the failure mode that once
+// wedged an unstage for 21h. The expired operation leaves the registry,
+// so the next retry starts a fresh one; the per-volume lock still
+// serializes it against the remains of the old one.
+func (n *Node) runOp(ctx context.Context, vol, kind string, fn func(context.Context) error) error {
+	timeout := n.opTimeout()
 	n.opMu.Lock()
 	o, ok := n.ops[vol]
 	if !ok {
-		o = &op{done: make(chan struct{})}
+		octx, cancel := context.WithTimeout(context.Background(), timeout)
+		// started uses the real clock, not n.now: op lifetime is a
+		// wall-clock bound, independent of the (test-overridable) clock
+		// the backup scheduler runs on.
+		o = &op{done: make(chan struct{}), kind: kind, started: time.Now(), cancel: cancel}
 		n.ops[vol] = o
 		go func() {
-			o.err = fn(context.Background())
+			err := fn(octx)
+			cancel()
 			n.opMu.Lock()
-			delete(n.ops, vol)
+			if n.ops[vol] == o {
+				delete(n.ops, vol)
+			}
 			n.opMu.Unlock()
+			o.err = err
 			close(o.done)
 		}()
 	}
 	n.opMu.Unlock()
+
+	timer := time.NewTimer(time.Until(o.started.Add(timeout)))
+	defer timer.Stop()
 	select {
 	case <-o.done:
 		return o.err
 	case <-ctx.Done():
 		return status.Errorf(codes.Aborted, "operation on %s still in progress", vol)
+	case <-timer.C:
+		n.expireOp(vol, o)
+		return status.Errorf(codes.DeadlineExceeded, "%s of %s did not finish within %s", kind, vol, timeout)
+	}
+}
+
+// expireOp fails an operation that outlived its cap: its context is
+// canceled and it leaves the registry. If fn ignores the context and
+// keeps running, its result is discarded when it finally returns.
+func (n *Node) expireOp(vol string, o *op) {
+	n.opMu.Lock()
+	if n.ops[vol] == o {
+		delete(n.ops, vol)
+	}
+	first := !o.expired
+	o.expired = true
+	n.opMu.Unlock()
+	o.cancel()
+	if first {
+		klog.ErrorS(nil, "operation exceeded its maximum lifetime, abandoning it",
+			"operation", o.kind, "volume", vol,
+			"age", time.Since(o.started).Round(time.Second), "timeout", n.opTimeout())
+		n.m.opsExpired.WithLabelValues(o.kind).Inc()
 	}
 }
 
@@ -218,7 +278,7 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, err
 	}
 
-	if err := n.runOp(ctx, vol, func(octx context.Context) error {
+	if err := n.runOp(ctx, vol, opStage, func(octx context.Context) error {
 		return n.stage(octx, vol, epoch, block, staging, interval)
 	}); err != nil {
 		return nil, toStatus(err)
@@ -404,7 +464,7 @@ func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolume
 	if err := checkID("volume id", vol); err != nil {
 		return nil, err
 	}
-	err := n.runOp(ctx, vol, func(octx context.Context) error { return n.unstage(octx, vol, staging) })
+	err := n.runOp(ctx, vol, opUnstage, func(octx context.Context) error { return n.unstage(octx, vol, staging) })
 	if err != nil {
 		return nil, toStatus(err)
 	}
