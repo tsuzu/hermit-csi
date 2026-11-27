@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
 	"github.com/tsuzu/hermit-csi/pkg/backup"
@@ -350,15 +351,24 @@ func (n *Node) backupDueAt(vol string, interval time.Duration, now time.Time) bo
 	return !ok || now.Sub(last) >= interval
 }
 
-// backupDue backs up, one at a time, every staged volume whose interval has
-// elapsed since its last periodic backup started. A failed backup is retried
-// one interval later.
+// maxConcurrentBackups bounds how many volumes the periodic loop backs up
+// at once. Volumes are independent (each backup takes only its own volume
+// lock), so one volume's slow or stuck backup must not delay the others —
+// with a single sequential loop it once could, indefinitely.
+const maxConcurrentBackups = 4
+
+// backupDue backs up every staged volume whose interval has elapsed since
+// its last periodic backup started, each in its own goroutine and under
+// its own --op-timeout deadline. A failed backup is retried one interval
+// later.
 func (n *Node) backupDue(ctx context.Context) {
 	vols, err := n.states.list()
 	if err != nil {
 		klog.ErrorS(err, "list states")
 		return
 	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxConcurrentBackups)
 	for _, vol := range vols {
 		st, err := n.states.load(vol)
 		if err != nil || st == nil || !st.Staged || st.Fenced {
@@ -370,10 +380,16 @@ func (n *Node) backupDue(ctx context.Context) {
 			continue
 		}
 		n.markBackup(vol, now)
-		if _, err := n.BackupVolume(ctx, vol); err != nil {
-			klog.ErrorS(err, "periodic backup failed", "volume", vol, "interval", interval)
-		}
+		g.Go(func() error {
+			bctx, cancel := context.WithTimeout(gctx, n.opTimeout())
+			defer cancel()
+			if _, err := n.BackupVolume(bctx, vol); err != nil {
+				klog.ErrorS(err, "periodic backup failed", "volume", vol, "interval", interval)
+			}
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
 
 // trimDue runs fstrim on every mounted filesystem volume whose last trim is
