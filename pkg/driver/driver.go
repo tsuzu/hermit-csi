@@ -39,6 +39,12 @@ const (
 	MinBackupInterval = 10 * time.Second
 )
 
+// DefaultOpTimeout is the maximum lifetime of one detached operation
+// (Config.OpTimeout unset). It must stay well above a full restore of the
+// largest volume; the in-flight age metric and HermitOperationStuck alert
+// exist to notice operations long before they reach it.
+const DefaultOpTimeout = 30 * time.Minute
+
 // parseBackupInterval validates a per-volume backup interval ("30s", "2m", ...).
 func parseBackupInterval(v string) (time.Duration, error) {
 	d, err := time.ParseDuration(strings.TrimSpace(v))
@@ -85,6 +91,11 @@ type Config struct {
 	VG             *lvm.VG
 	StateDir       string
 	BackupInterval time.Duration
+	// OpTimeout bounds one detached stage/unstage operation (see runOp) and
+	// one periodic backup attempt. An operation that exceeds it is failed
+	// instead of running on detached behind kubelet's retries. 0 selects
+	// DefaultOpTimeout.
+	OpTimeout time.Duration
 	// TrimInterval is how often fstrim runs on each mounted filesystem
 	// volume, so blocks of deleted files go back to the thin pool (0 = off).
 	TrimInterval   time.Duration

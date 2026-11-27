@@ -100,3 +100,40 @@ tests:
       - eval_time: 60h # no new failure for 2 days
         alertname: HermitFstrimFailing
         exp_alerts: []
+  # An unstage in flight: its age grows by 60s per minute, crosses the 15m
+  # threshold at 16m, and fires after the 5m "for" at 21m.
+  - interval: 1m
+    input_series:
+      - series: hermit_operation_in_flight_age_seconds{pod="node-a",volume="vol",operation="unstage"}
+        values: 0+60x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HermitOperationStuck
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: HermitOperationStuck
+        exp_alerts:
+          - exp_labels: {severity: warning, pod: node-a, volume: vol, operation: unstage}
+            exp_annotations:
+              summary: A unstage of volume vol has been in flight for 22m 0s on node-a
+              description: >-
+                The operation should have finished or been abandoned at --op-timeout. Check the S3
+                endpoint and the node plugin logs ("operation exceeded its maximum lifetime").
+  - interval: 1m
+    input_series:
+      - series: hermit_backups_total{pod="node-a",trigger="unstage",result="failure"}
+        values: 0 0 0 1x20
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HermitUnstageBackupFailing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HermitUnstageBackupFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, pod: node-a, trigger: unstage, result: failure}
+            exp_annotations:
+              summary: The final backup at unstage is failing on node-a
+              description: >-
+                Volumes cannot finish unstaging from node-a until their final backup to S3
+                succeeds; pods leaving the node hang in Terminating. Check the S3 endpoint and the
+                node plugin logs ("final backup of").

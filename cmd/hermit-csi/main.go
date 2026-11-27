@@ -36,6 +36,7 @@ func main() {
 		tokenFile  = flag.String("s3-web-identity-token-file", "", "service account token for AssumeRoleWithWebIdentity (env S3_WEB_IDENTITY_TOKEN_FILE); without it the role is assumed with the default credentials")
 		session    = flag.String("s3-role-session-name", "", "STS role session name (env S3_ROLE_SESSION_NAME; default hermit-csi)")
 		stsURL     = flag.String("sts-endpoint", "", "STS endpoint URL, e.g. for MinIO (env S3_STS_ENDPOINT; default: AWS regional)")
+		s3Timeout  = flag.Duration("s3-timeout", store.DefaultTimeout, "timeout for a single S3/STS HTTP request; the SDK retries on top of it. Keeps a half-dead endpoint from blocking a call forever")
 		chunkMiB   = flag.Int64("chunk-size-mib", 4, "chunk size for new volumes (MiB)")
 		parallel   = flag.Int("parallel", 8, "concurrent chunk transfers")
 		gcInterval = flag.Duration("gc-interval", time.Hour, "chunk GC interval (controller)")
@@ -49,6 +50,7 @@ func main() {
 		advertise  = flag.String("agent-advertise", "", "snapshot agent address the controller should use, host:port (node)")
 		metrics    = flag.String("metrics-listen", ":9811", "Prometheus metrics listen address (/metrics); empty disables it")
 		lvmTimeout = flag.Duration("lvm-timeout", 5*time.Minute, "timeout for each LVM / thin-provisioning-tools command (node); 0 = none")
+		opTimeout  = flag.Duration("op-timeout", driver.DefaultOpTimeout, "maximum lifetime of one stage/unstage operation and of one periodic backup attempt (node); an operation that exceeds it is failed, not left running detached")
 	)
 	flag.Parse()
 
@@ -65,6 +67,7 @@ func main() {
 	scfg := store.Config{
 		Bucket: *bucket, Prefix: *prefix, Endpoint: *s3Endpoint, Region: *region, PathStyle: *pathStyle,
 		RoleARN: *roleARN, WebIdentityTokenFile: *tokenFile, RoleSessionName: *session, STSEndpoint: *stsURL,
+		Timeout: *s3Timeout,
 	}
 	scfg.ApplyRoleEnv(os.Getenv)
 	if scfg.RoleARN != "" {
@@ -88,6 +91,7 @@ func main() {
 		VG:             &lvm.VG{Name: *vgName, Pool: *pool, Timeout: *lvmTimeout},
 		StateDir:       *stateDir,
 		BackupInterval: *interval,
+		OpTimeout:      *opTimeout,
 		TrimInterval:   *trimEvery,
 		AgentListen:    *agentAddr,
 		AgentAdvertise: *advertise,
